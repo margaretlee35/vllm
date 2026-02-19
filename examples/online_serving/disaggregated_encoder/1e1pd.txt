@@ -1,0 +1,50 @@
+remove previous ec cache folder
+make ec cache folder
+wait for Encode port complete
+wait for PD port complete
+All services are up!
+Running benchmark (stream)...
+Namespace(subparser='bench', bench_type='serve', dispatch_function=<function BenchmarkServingSubcommand.cmd at 0x14ab9ae982c0>, trust_remote_code=False, seed=0, num_prompts=100, dataset_name='hf', no_stream=False, dataset_path='lmarena-ai/VisionArena-Chat', no_oversample=False, skip_chat_template=False, enable_multimodal_chat=False, disable_shuffle=False, custom_output_len=256, spec_bench_output_len=256, spec_bench_category=None, sonnet_input_len=550, sonnet_output_len=150, sonnet_prefix_len=200, sharegpt_output_len=None, blazedit_min_distance=0.0, blazedit_max_distance=1.0, asr_max_audio_len_sec=inf, asr_min_audio_len_sec=0.0, random_input_len=1024, random_output_len=128, random_range_ratio=0.0, random_prefix_len=0, random_batch_size=1, no_reranker=False, random_mm_base_items_per_request=1, random_mm_num_mm_items_range_ratio=0.0, random_mm_limit_mm_per_prompt={'image': 255, 'video': 1}, random_mm_bucket_config={(256, 256, 1): 0.5, (720, 1280, 1): 0.5, (720, 1280, 16): 0.0}, hf_subset=None, hf_split=None, hf_name=None, hf_output_len=None, prefix_repetition_prefix_len=256, prefix_repetition_suffix_len=256, prefix_repetition_num_prefixes=10, prefix_repetition_output_len=128, label=None, backend='openai-chat', base_url=None, host='127.0.0.1', port=10001, endpoint='/v1/chat/completions', header=None, max_concurrency=None, model='Qwen/Qwen2.5-VL-3B-Instruct', input_len=None, output_len=None, tokenizer=None, tokenizer_mode='auto', use_beam_search=False, logprobs=None, request_rate=inf, burstiness=1.0, disable_tqdm=False, num_warmups=0, profile=False, save_result=False, save_detailed=False, append_result=False, metadata=None, result_dir=None, result_filename=None, ignore_eos=False, percentile_metrics=None, metric_percentiles='99', goodput=None, request_id_prefix='bench-365bd8ca-', top_p=None, top_k=None, min_p=None, temperature=None, frequency_penalty=None, presence_penalty=None, repetition_penalty=None, served_model_name=None, lora_modules=None, ramp_up_strategy=None, ramp_up_start_rps=None, ramp_up_end_rps=None, ready_check_timeout_sec=0, extra_body=None, skip_tokenizer_init=False, insecure=False)
+WARNING: vllm bench serve no longer sets temperature==0 (greedy) in requests by default. The default will be determined on the server side and can be model/API specific. For the old behavior, include --temperature=0.
+Starting initial single prompt test run...
+Skipping endpoint ready check.
+Starting main benchmark run...
+Traffic request rate: inf
+Burstiness factor: 1.0 (Poisson process)
+Maximum request concurrency: None
+  0%|          | 0/100 [00:00<?, ?it/s]  1%|          | 1/100 [00:02<04:02,  2.45s/it]  2%|▏         | 2/100 [00:03<02:11,  1.35s/it]  5%|▌         | 5/100 [00:03<00:48,  1.95it/s] 10%|█         | 10/100 [00:04<00:23,  3.85it/s] 17%|█▋        | 17/100 [00:04<00:13,  6.12it/s] 45%|████▌     | 45/100 [00:05<00:02, 18.76it/s] 59%|█████▉    | 59/100 [00:05<00:01, 20.99it/s] 72%|███████▏  | 72/100 [00:05<00:01, 27.63it/s] 77%|███████▋  | 77/100 [00:06<00:00, 25.58it/s] 87%|████████▋ | 87/100 [00:06<00:00, 25.39it/s] 91%|█████████ | 91/100 [00:06<00:00, 26.14it/s] 95%|█████████▌| 95/100 [00:07<00:00, 19.17it/s] 98%|█████████▊| 98/100 [00:07<00:00, 15.38it/s]100%|██████████| 100/100 [00:07<00:00, 13.00it/s]
+tip: install termplotlib and gnuplot to plot the metrics
+============ Serving Benchmark Result ============
+Successful requests:                     100       
+Failed requests:                         0         
+Benchmark duration (s):                  7.69      
+Total input tokens:                      5280      
+Total generated tokens:                  9883      
+Request throughput (req/s):              13.00     
+Output token throughput (tok/s):         1285.21   
+Peak output token throughput (tok/s):    1016.00   
+Peak concurrent requests:                100.00    
+Total token throughput (tok/s):          1971.83   
+---------------Time to First Token----------------
+Mean TTFT (ms):                          4022.81   
+Median TTFT (ms):                        4108.03   
+P99 TTFT (ms):                           5811.29   
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          11.71     
+Median TPOT (ms):                        13.32     
+P99 TPOT (ms):                           17.25     
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           55.60     
+Median ITL (ms):                         14.88     
+P99 ITL (ms):                            541.03    
+==================================================
+Running single request with local image (non-stream)...
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0100   390    0     0  100   390      0    324  0:00:01  0:00:01 --:--:--   324 23  1684    0     0  100   390      0    193  0:00:02  0:00:02 --:--:--   193100  1684  100  1294  100   390    643    193  0:00:02  0:00:02 --:--:--   837
+{"id":"chatcmpl-74925ca1-b46d-4f4e-8627-6eafe93b4fcb","object":"chat.completion","created":1771541631,"model":"Qwen/Qwen2.5-VL-3B-Instruct","choices":[{"index":0,"message":{"role":"assistant","content":"The image depicts an urban scene with several elements:\n\n1. **Foreground**: There are three pigeons on the ground, one of which is prominently in the foreground, facing away from the camera.\n2. **Background**: Two individuals dressed in formal attire (suits and ties) are walking along a sidewalk. The background also includes a brick wall and some trees with autumn leaves.\n3. **Sidewalk**: The sidewalk is made of wooden planks and has scattered leaves on it.\n4. **Buildings**: There are buildings visible in the background, including a multi-story building with balconies.\n\nThe overall setting appears to be a quiet, possibly early morning or late afternoon, urban environment.","refusal":null,"annotations":null,"audio":null,"function_call":null,"tool_calls":[],"reasoning":null},"logprobs":null,"finish_reason":"stop","stop_reason":null,"token_ids":null}],"service_tier":null,"system_fingerprint":null,"usage":{"prompt_tokens":8057,"total_tokens":8198,"completion_tokens":141,"prompt_tokens_details":null},"prompt_logprobs":null,"prompt_token_ids":null,"kv_transfer_params":null}cleanup...
+Stopping everything…
+Killing process 377282
+Killing process 377283
+Force killing process 377282
+Force killing process 377283
