@@ -129,12 +129,14 @@ PIDS+=($!)
 
 # Wait for workers
 wait_for_server "$ENCODE_PORT"
-wait_for_server "$PREFILL_DECODE_PORT"
+echo "wait for Encode port complete"
 
+wait_for_server "$PREFILL_DECODE_PORT"
+echo "wait for PD port complete"
 ###############################################################################
 # Proxy
 ###############################################################################
-python disagg_epd_proxy.py \
+python ${GIT_ROOT}/examples/online_serving/disaggregated_encoder/disagg_epd_proxy.py \
     --host "0.0.0.0" \
     --port "$PROXY_PORT" \
     --encode-servers-urls "http://localhost:$ENCODE_PORT" \
