@@ -7,7 +7,7 @@ declare -a PIDS=()
 # Configuration -- override via env before running
 ###############################################################################
 MODEL="${MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}"
-LOG_PATH="${LOG_PATH:-./logs}"
+LOG_PATH="${LOG_PATH:-./lovelace/logs}"
 mkdir -p "$LOG_PATH"
 
 ENCODE_PORT="${ENCODE_PORT:-19534}"
@@ -23,9 +23,21 @@ EC_SHARED_STORAGE_PATH="${EC_SHARED_STORAGE_PATH:-/tmp/ec_cache}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-12000}"   # wait_for_server timeout
 
 NUM_PROMPTS="${NUM_PROMPTS:-100}"    # number of prompts to send in benchmark
+PD_MAX_MODEL_LEN="${PD_MAX_MODEL_LEN:-65536}"
+PD_MAX_NUM_BATCHED_TOKENS="${PD_MAX_NUM_BATCHED_TOKENS:-32768}"
+PD_MAX_NUM_SEQS="${PD_MAX_NUM_SEQS:-64}"
+BENCH_REQUEST_RATE="${BENCH_REQUEST_RATE:-64}"
+BENCH_MAX_CONCURRENCY="${BENCH_MAX_CONCURRENCY:-64}"
+NIXL_BASE_PORT="${NIXL_BASE_PORT:-$((5200 + ($$ % 1000)))}"
+PREFILL_NIXL_SIDE_CHANNEL_PORT="${PREFILL_NIXL_SIDE_CHANNEL_PORT:-$NIXL_BASE_PORT}"
+DECODE_NIXL_SIDE_CHANNEL_PORT="${DECODE_NIXL_SIDE_CHANNEL_PORT:-$((NIXL_BASE_PORT + 1000))}"
+PREFILL_GPU_MEMORY_UTILIZATION="${PREFILL_GPU_MEMORY_UTILIZATION:-0.85}"
+DECODE_GPU_MEMORY_UTILIZATION="${DECODE_GPU_MEMORY_UTILIZATION:-0.85}"
 
 export UCX_TLS=all
 export UCX_NET_DEVICES=all
+
+ulimit -n "${ULIMIT_NOFILE:-65535}" >/dev/null 2>&1 || true
 
 ###############################################################################
 # Helpers
@@ -47,15 +59,30 @@ wait_for_server() {
         done" && return 0 || return 1
 }
 
+port_in_use() {
+    local port=$1
+    ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]${port}$"
+}
+
 # Cleanup function
 cleanup() {
+    local rc=$?
+    set +e
     echo "Stopping everything…"
-    trap - INT TERM USR1   # prevent re-entrancy
+    trap - EXIT INT TERM USR1   # prevent re-entrancy
     
     # Kill all tracked PIDs
     for pid in "${PIDS[@]}"; do
         if kill -0 "$pid" 2>/dev/null; then
             echo "Killing process $pid"
+            kill "$pid" 2>/dev/null
+        fi
+    done
+
+    # Kill any EngineCore orphaned from this run (e.g., APIServer died first).
+    for pid in $(grep -hEo 'EngineCore pid=[0-9]+' "$ENC_LOG" "$P_LOG" "$D_LOG" 2>/dev/null | awk -F= '{print $2}' | sort -u); do
+        if kill -0 "$pid" 2>/dev/null; then
+            echo "Killing orphan EngineCore $pid"
             kill "$pid" 2>/dev/null
         fi
     done
@@ -70,14 +97,22 @@ cleanup() {
             kill -9 "$pid" 2>/dev/null
         fi
     done
+
+    for pid in $(grep -hEo 'EngineCore pid=[0-9]+' "$ENC_LOG" "$P_LOG" "$D_LOG" 2>/dev/null | awk -F= '{print $2}' | sort -u); do
+        if kill -0 "$pid" 2>/dev/null; then
+            echo "Force killing orphan EngineCore $pid"
+            kill -9 "$pid" 2>/dev/null
+        fi
+    done
     
     # Kill the entire process group as backup
     kill -- -$$ 2>/dev/null
     
     echo "All processes stopped."
-    exit 0
+    exit "$rc"
 }
 
+trap cleanup EXIT
 trap cleanup INT
 trap cleanup USR1
 trap cleanup TERM
@@ -88,6 +123,12 @@ rm -rf "$EC_SHARED_STORAGE_PATH"
 
 echo "make ec cache folder"
 mkdir -p "$EC_SHARED_STORAGE_PATH"
+
+while port_in_use "$PREFILL_NIXL_SIDE_CHANNEL_PORT" || \
+      port_in_use "$DECODE_NIXL_SIDE_CHANNEL_PORT"; do
+    PREFILL_NIXL_SIDE_CHANNEL_PORT=$((PREFILL_NIXL_SIDE_CHANNEL_PORT + 1))
+    DECODE_NIXL_SIDE_CHANNEL_PORT=$((DECODE_NIXL_SIDE_CHANNEL_PORT + 1))
+done
 
 ###############################################################################
 # Encoder worker
@@ -117,13 +158,15 @@ PIDS+=($!)
 ###############################################################################
 CUDA_VISIBLE_DEVICES="$GPU_P" \
 UCX_NET_DEVICES=all \
-VLLM_NIXL_SIDE_CHANNEL_PORT=5559 \
+VLLM_NIXL_SIDE_CHANNEL_PORT="$PREFILL_NIXL_SIDE_CHANNEL_PORT" \
 vllm serve "$MODEL" \
-    --gpu-memory-utilization 0.7 \
+    --gpu-memory-utilization "$PREFILL_GPU_MEMORY_UTILIZATION" \
     --port "$PREFILL_PORT" \
     --enforce-eager \
     --enable-request-id-headers \
-    --max-num-seqs 128 \
+    --max-model-len "$PD_MAX_MODEL_LEN" \
+    --max-num-batched-tokens "$PD_MAX_NUM_BATCHED_TOKENS" \
+    --max-num-seqs "$PD_MAX_NUM_SEQS" \
     --allowed-local-media-path "${GIT_ROOT}"/tests/v1/ec_connector/integration \
     --ec-transfer-config '{
         "ec_connector": "ECExampleConnector",
@@ -145,13 +188,15 @@ PIDS+=($!)
 ###############################################################################
 CUDA_VISIBLE_DEVICES="$GPU_D" \
 UCX_NET_DEVICES=all \
-VLLM_NIXL_SIDE_CHANNEL_PORT=6000 \
+VLLM_NIXL_SIDE_CHANNEL_PORT="$DECODE_NIXL_SIDE_CHANNEL_PORT" \
 vllm serve "$MODEL" \
-    --gpu-memory-utilization 0.7 \
+    --gpu-memory-utilization "$DECODE_GPU_MEMORY_UTILIZATION" \
     --port "$DECODE_PORT" \
     --enforce-eager \
     --enable-request-id-headers \
-    --max-num-seqs 128 \
+    --max-model-len "$PD_MAX_MODEL_LEN" \
+    --max-num-batched-tokens "$PD_MAX_NUM_BATCHED_TOKENS" \
+    --max-num-seqs "$PD_MAX_NUM_SEQS" \
     --allowed-local-media-path "${GIT_ROOT}"/tests/v1/ec_connector/integration \
     --kv-transfer-config '{
         "kv_connector": "NixlConnector",
@@ -194,6 +239,8 @@ vllm bench serve \
   --dataset-path        lmarena-ai/VisionArena-Chat \
   --seed                0 \
   --num-prompts         "$NUM_PROMPTS" \
+  --request-rate        "$BENCH_REQUEST_RATE" \
+  --max-concurrency     "$BENCH_MAX_CONCURRENCY" \
   --port                "$PROXY_PORT"
 
 PIDS+=($!)

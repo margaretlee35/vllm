@@ -7,7 +7,7 @@ declare -a PIDS=()
 # Configuration -- override via env before running
 ###############################################################################
 MODEL="${MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}"
-LOG_PATH="${LOG_PATH:-./logs}"
+LOG_PATH="${LOG_PATH:-./lovelace/logs}"
 mkdir -p "$LOG_PATH"
 
 ENCODE_PORT="${ENCODE_PORT:-19534}"
@@ -21,6 +21,14 @@ EC_SHARED_STORAGE_PATH="${EC_SHARED_STORAGE_PATH:-/tmp/ec_cache}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-12000}"   # wait_for_server timeout
 
 NUM_PROMPTS="${NUM_PROMPTS:-100}"    # number of prompts to send in benchmark
+PD_GPU_MEMORY_UTILIZATION="${PD_GPU_MEMORY_UTILIZATION:-0.85}"
+PD_MAX_MODEL_LEN="${PD_MAX_MODEL_LEN:-65536}"
+PD_MAX_NUM_BATCHED_TOKENS="${PD_MAX_NUM_BATCHED_TOKENS:-32768}"
+PD_MAX_NUM_SEQS="${PD_MAX_NUM_SEQS:-64}"
+BENCH_REQUEST_RATE="${BENCH_REQUEST_RATE:-64}"
+BENCH_MAX_CONCURRENCY="${BENCH_MAX_CONCURRENCY:-64}"
+
+ulimit -n "${ULIMIT_NOFILE:-65535}" >/dev/null 2>&1 || true
 
 ###############################################################################
 # Helpers
@@ -43,13 +51,23 @@ wait_for_server() {
 
 # Cleanup function
 cleanup() {
+    local rc=$?
+    set +e
     echo "Stopping everything…"
-    trap - INT TERM USR1   # prevent re-entrancy
+    trap - EXIT INT TERM USR1   # prevent re-entrancy
     
     # Kill all tracked PIDs
     for pid in "${PIDS[@]}"; do
         if kill -0 "$pid" 2>/dev/null; then
             echo "Killing process $pid"
+            kill "$pid" 2>/dev/null
+        fi
+    done
+
+    # Kill any EngineCore orphaned from this run (e.g., APIServer died first).
+    for pid in $(grep -hEo 'EngineCore pid=[0-9]+' "$ENC_LOG" "$PD_LOG" 2>/dev/null | awk -F= '{print $2}' | sort -u); do
+        if kill -0 "$pid" 2>/dev/null; then
+            echo "Killing orphan EngineCore $pid"
             kill "$pid" 2>/dev/null
         fi
     done
@@ -64,14 +82,22 @@ cleanup() {
             kill -9 "$pid" 2>/dev/null
         fi
     done
+
+    for pid in $(grep -hEo 'EngineCore pid=[0-9]+' "$ENC_LOG" "$PD_LOG" 2>/dev/null | awk -F= '{print $2}' | sort -u); do
+        if kill -0 "$pid" 2>/dev/null; then
+            echo "Force killing orphan EngineCore $pid"
+            kill -9 "$pid" 2>/dev/null
+        fi
+    done
     
     # Kill the entire process group as backup
     kill -- -$$ 2>/dev/null
     
     echo "All processes stopped."
-    exit 0
+    exit "$rc"
 }
 
+trap cleanup EXIT
 trap cleanup INT
 trap cleanup USR1
 trap cleanup TERM
@@ -110,11 +136,13 @@ PIDS+=($!)
 # Prefill+Decode worker
 ###############################################################################
 CUDA_VISIBLE_DEVICES="$GPU_PD" vllm serve "$MODEL" \
-    --gpu-memory-utilization 0.7 \
+    --gpu-memory-utilization "$PD_GPU_MEMORY_UTILIZATION" \
     --port "$PREFILL_DECODE_PORT" \
     --enforce-eager \
     --enable-request-id-headers \
-    --max-num-seqs 128 \
+    --max-model-len "$PD_MAX_MODEL_LEN" \
+    --max-num-batched-tokens "$PD_MAX_NUM_BATCHED_TOKENS" \
+    --max-num-seqs "$PD_MAX_NUM_SEQS" \
     --allowed-local-media-path "${GIT_ROOT}"/tests/v1/ec_connector/integration \
     --ec-transfer-config '{
         "ec_connector": "ECExampleConnector",
@@ -161,6 +189,8 @@ vllm bench serve \
   --dataset-path        lmarena-ai/VisionArena-Chat \
   --seed                0 \
   --num-prompts         "$NUM_PROMPTS" \
+  --request-rate        "$BENCH_REQUEST_RATE" \
+  --max-concurrency     "$BENCH_MAX_CONCURRENCY" \
   --port                "$PROXY_PORT"
 
 PIDS+=($!)

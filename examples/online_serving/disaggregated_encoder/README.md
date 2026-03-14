@@ -12,11 +12,38 @@ For a detailed explanation of the EPD features, please refer to the [Disaggregat
 
 - `disagg_1e1pd_example.sh` - Sets up the 1e1pd configuration, runs the VisionArena benchmark, and processes a single request with a local image.
 
+- `nondisagg_2gpu_example.sh` - Runs a single non-disaggregated server using 2 GPUs (`--tensor-parallel-size 2`), then runs the same benchmark and single request flow.
+
+- `compare_disagg_vs_nondisagg_2gpu.sh` - Runs `disagg_1e1pd_example.sh` and `nondisagg_2gpu_example.sh` with the same `NUM_PROMPTS`, then prints a side-by-side metric summary.
+
 ### Custom Configuration
 
 ```bash
 # Use specific GPUs
 GPU_E=0 GPU_PD=1 GPU_P=1 GPU_D=2 bash disagg_1e1p1d_example.sh
+
+# Non-disaggregated 2-GPU baseline
+GPU0=0 GPU1=1 bash nondisagg_2gpu_example.sh
+
+# Compare disaggregated vs non-disaggregated (both 2 GPUs)
+NUM_PROMPTS=100 bash compare_disagg_vs_nondisagg_2gpu.sh
+
+# Higher-memory pressure compare run (long random prompts + larger cache budget)
+MODEL="Qwen/Qwen2.5-VL-3B-Instruct" \
+NUM_PROMPTS=400 \
+BENCH_DATASET_NAME=random \
+BENCH_DATASET_PATH="" \
+BENCH_RANDOM_INPUT_LEN=8192 \
+BENCH_RANDOM_OUTPUT_LEN=1024 \
+BENCH_MAX_CONCURRENCY=512 \
+MAX_NUM_SEQS=1024 \
+MAX_NUM_BATCHED_TOKENS=262144 \
+ENC_MAX_NUM_BATCHED_TOKENS=131072 \
+PD_MAX_NUM_BATCHED_TOKENS=262144 \
+GPU_MEMORY_UTILIZATION=0.95 \
+ENC_GPU_MEMORY_UTILIZATION=0.4 \
+PD_GPU_MEMORY_UTILIZATION=0.95 \
+bash compare_disagg_vs_nondisagg_2gpu.sh
 
 # Use specific ports
 ENDPOINT_PORT=10001 bash disagg_1e1p1d_example.sh
@@ -27,6 +54,11 @@ MODEL="Qwen/Qwen2.5-VL-3B-Instruct" bash disagg_1e1p1d_example.sh
 # Use specific storage path
 EC_SHARED_STORAGE_PATH="/tmp/my_ec_cache" bash disagg_1e1p1d_example.sh
 ```
+
+Notes:
+- For `BENCH_DATASET_NAME=random`, keep `BENCH_DATASET_PATH=""`.
+- For `BENCH_DATASET_NAME=hf`, set `BENCH_HF_OUTPUT_LEN` (defaults to `128` in these scripts) so benchmark generation is non-zero.
+- `SINGLE_REQUEST_MAX_TOKENS` and `CURL_MAX_TIME` control the final single non-stream curl request and prevent indefinite waits.
 
 ## Encoder Instances
 
