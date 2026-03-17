@@ -1,0 +1,97 @@
+{
+  "model": "Qwen/Qwen2.5-VL-3B-Instruct",
+  "baseline_name": "baseline",
+  "metric_percentiles": "50,90,95,99",
+  "percentile_for_summary": 99.0,
+  "vllm_command": [
+    "/home/stevehenny/Documents/projects/vllm/.venv-bench/bin/vllm"
+  ],
+  "common_engine_args": [
+    "--dtype",
+    "float16",
+    "--enforce-eager",
+    "--max-model-len",
+    "2048",
+    "--max-num-seqs",
+    "1",
+    "--max-num-batched-tokens",
+    "1024",
+    "--gpu-memory-utilization",
+    "0.9"
+  ],
+  "variants": [
+    {
+      "name": "baseline",
+      "extra_engine_args": []
+    },
+    {
+      "name": "reduced-pixels",
+      "extra_engine_args": [
+        "--mm-processor-kwargs",
+        "{\"max_pixels\":262144}"
+      ]
+    }
+  ],
+  "rows": [
+    {
+      "variant": "baseline",
+      "port": 18000,
+      "mm_result_json": "/home/stevehenny/Documents/projects/vllm/benchmark_results/qwen25vl3b_pruning_exp/baseline/mm_processor.json",
+      "serve_result_json": "/home/stevehenny/Documents/projects/vllm/benchmark_results/qwen25vl3b_pruning_exp/baseline/serve.json",
+      "encoder_forward_ms_mean": 45.278349102591164,
+      "encoder_forward_ms_p": 100.21972555085085,
+      "preprocessor_total_ms_mean": 15.438360735424794,
+      "preprocessor_total_ms_p": 36.67013036319986,
+      "mm_e2el_ms_mean": 8676.181153178914,
+      "mm_e2el_ms_p": 16955.6754787697,
+      "serve_request_throughput": 2.054932584221111,
+      "serve_output_throughput": 65.75784269507555,
+      "serve_total_token_throughput": 591.82058425568,
+      "serve_ttft_ms_mean": 126.59336876968155,
+      "serve_ttft_ms_p": null,
+      "serve_tpot_ms_mean": 11.612371105471658,
+      "serve_tpot_ms_p": null,
+      "serve_e2el_ms_mean": 486.5768730393029,
+      "serve_e2el_ms_p": null,
+      "encoder_forward_ms_mean_speedup_vs_baseline": 1.0,
+      "preprocessor_total_ms_mean_speedup_vs_baseline": 1.0,
+      "mm_e2el_ms_mean_speedup_vs_baseline": 1.0,
+      "serve_ttft_ms_mean_speedup_vs_baseline": 1.0,
+      "serve_tpot_ms_mean_speedup_vs_baseline": 1.0,
+      "serve_e2el_ms_mean_speedup_vs_baseline": 1.0,
+      "serve_request_throughput_speedup_vs_baseline": 1.0,
+      "serve_output_throughput_speedup_vs_baseline": 1.0,
+      "serve_total_token_throughput_speedup_vs_baseline": 1.0
+    },
+    {
+      "variant": "reduced-pixels",
+      "port": 18001,
+      "mm_result_json": "/home/stevehenny/Documents/projects/vllm/benchmark_results/qwen25vl3b_pruning_exp/reduced-pixels/mm_processor.json",
+      "serve_result_json": "/home/stevehenny/Documents/projects/vllm/benchmark_results/qwen25vl3b_pruning_exp/reduced-pixels/serve.json",
+      "encoder_forward_ms_mean": 16.490164361312054,
+      "encoder_forward_ms_p": 28.319719838909805,
+      "preprocessor_total_ms_mean": 5.365501486812718,
+      "preprocessor_total_ms_p": 12.586723535787312,
+      "mm_e2el_ms_mean": 7941.779436622164,
+      "mm_e2el_ms_p": 15468.758013889892,
+      "serve_request_throughput": 2.343141758201263,
+      "serve_output_throughput": 74.98053626244041,
+      "serve_total_token_throughput": 674.8248263619637,
+      "serve_ttft_ms_mean": 68.2544219554984,
+      "serve_ttft_ms_p": null,
+      "serve_tpot_ms_mean": 11.563540319630485,
+      "serve_tpot_ms_p": null,
+      "serve_e2el_ms_mean": 426.72417186404346,
+      "serve_e2el_ms_p": null,
+      "encoder_forward_ms_mean_speedup_vs_baseline": 2.745779126909112,
+      "preprocessor_total_ms_mean_speedup_vs_baseline": 2.877337891596724,
+      "mm_e2el_ms_mean_speedup_vs_baseline": 1.0924731947566033,
+      "serve_ttft_ms_mean_speedup_vs_baseline": 1.8547277252193257,
+      "serve_tpot_ms_mean_speedup_vs_baseline": 1.004222823157219,
+      "serve_e2el_ms_mean_speedup_vs_baseline": 1.140260864327903,
+      "serve_request_throughput_speedup_vs_baseline": 1.1402523743081299,
+      "serve_output_throughput_speedup_vs_baseline": 1.1402523743081299,
+      "serve_total_token_throughput_speedup_vs_baseline": 1.1402523743081296
+    }
+  ]
+}
