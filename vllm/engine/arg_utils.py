@@ -1078,6 +1078,17 @@ class EngineArgs:
         multimodal_group.add_argument(
             "--video-pruning-rate", **multimodal_kwargs["video_pruning_rate"]
         )
+        multimodal_group.add_argument(
+            "--vision-zip-rate", **multimodal_kwargs["vision_zip_rate"]
+        )
+        multimodal_group.add_argument(
+            "--vision-zip-dominant-ratio",
+            **multimodal_kwargs["vision_zip_dominant_ratio"],
+        )
+        multimodal_group.add_argument(
+            "--vision-zip-attention-layer",
+            **multimodal_kwargs["vision_zip_attention_layer"],
+        )
 
         # LoRA related configs
         lora_kwargs = get_kwargs(LoRAConfig)

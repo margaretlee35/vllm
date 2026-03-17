@@ -27,6 +27,9 @@ PD_MAX_NUM_BATCHED_TOKENS="${PD_MAX_NUM_BATCHED_TOKENS:-32768}"
 PD_MAX_NUM_SEQS="${PD_MAX_NUM_SEQS:-64}"
 BENCH_REQUEST_RATE="${BENCH_REQUEST_RATE:-64}"
 BENCH_MAX_CONCURRENCY="${BENCH_MAX_CONCURRENCY:-64}"
+VISION_ZIP_RATE="${VISION_ZIP_RATE:-}"
+VISION_ZIP_DOMINANT_RATIO="${VISION_ZIP_DOMINANT_RATIO:-}"
+VISION_ZIP_ATTENTION_LAYER="${VISION_ZIP_ATTENTION_LAYER:-}"
 
 ulimit -n "${ULIMIT_NOFILE:-65535}" >/dev/null 2>&1 || true
 
@@ -109,6 +112,17 @@ rm -rf "$EC_SHARED_STORAGE_PATH"
 echo "make ec cache folder"
 mkdir -p "$EC_SHARED_STORAGE_PATH"
 
+declare -a VISION_ZIP_ARGS=()
+if [[ -n "$VISION_ZIP_RATE" ]]; then
+    VISION_ZIP_ARGS+=(--vision-zip-rate "$VISION_ZIP_RATE")
+fi
+if [[ -n "$VISION_ZIP_DOMINANT_RATIO" ]]; then
+    VISION_ZIP_ARGS+=(--vision-zip-dominant-ratio "$VISION_ZIP_DOMINANT_RATIO")
+fi
+if [[ -n "$VISION_ZIP_ATTENTION_LAYER" ]]; then
+    VISION_ZIP_ARGS+=(--vision-zip-attention-layer "$VISION_ZIP_ATTENTION_LAYER")
+fi
+
 ###############################################################################
 # Encoder worker
 ###############################################################################
@@ -128,6 +142,7 @@ CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
             "shared_storage_path": "'"$EC_SHARED_STORAGE_PATH"'"
         }
     }' \
+    "${VISION_ZIP_ARGS[@]}" \
     >"${ENC_LOG}" 2>&1 &
 
 PIDS+=($!)
@@ -151,6 +166,7 @@ CUDA_VISIBLE_DEVICES="$GPU_PD" vllm serve "$MODEL" \
             "shared_storage_path": "'"$EC_SHARED_STORAGE_PATH"'"
         }
     }' \
+    "${VISION_ZIP_ARGS[@]}" \
     >"${PD_LOG}" 2>&1 &
 
 PIDS+=($!)

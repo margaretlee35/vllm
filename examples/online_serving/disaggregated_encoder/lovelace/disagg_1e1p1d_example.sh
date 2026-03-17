@@ -33,6 +33,9 @@ PREFILL_NIXL_SIDE_CHANNEL_PORT="${PREFILL_NIXL_SIDE_CHANNEL_PORT:-$NIXL_BASE_POR
 DECODE_NIXL_SIDE_CHANNEL_PORT="${DECODE_NIXL_SIDE_CHANNEL_PORT:-$((NIXL_BASE_PORT + 1000))}"
 PREFILL_GPU_MEMORY_UTILIZATION="${PREFILL_GPU_MEMORY_UTILIZATION:-0.85}"
 DECODE_GPU_MEMORY_UTILIZATION="${DECODE_GPU_MEMORY_UTILIZATION:-0.85}"
+VISION_ZIP_RATE="${VISION_ZIP_RATE:-}"
+VISION_ZIP_DOMINANT_RATIO="${VISION_ZIP_DOMINANT_RATIO:-}"
+VISION_ZIP_ATTENTION_LAYER="${VISION_ZIP_ATTENTION_LAYER:-}"
 
 export UCX_TLS=all
 export UCX_NET_DEVICES=all
@@ -124,6 +127,17 @@ rm -rf "$EC_SHARED_STORAGE_PATH"
 echo "make ec cache folder"
 mkdir -p "$EC_SHARED_STORAGE_PATH"
 
+declare -a VISION_ZIP_ARGS=()
+if [[ -n "$VISION_ZIP_RATE" ]]; then
+    VISION_ZIP_ARGS+=(--vision-zip-rate "$VISION_ZIP_RATE")
+fi
+if [[ -n "$VISION_ZIP_DOMINANT_RATIO" ]]; then
+    VISION_ZIP_ARGS+=(--vision-zip-dominant-ratio "$VISION_ZIP_DOMINANT_RATIO")
+fi
+if [[ -n "$VISION_ZIP_ATTENTION_LAYER" ]]; then
+    VISION_ZIP_ARGS+=(--vision-zip-attention-layer "$VISION_ZIP_ATTENTION_LAYER")
+fi
+
 while port_in_use "$PREFILL_NIXL_SIDE_CHANNEL_PORT" || \
       port_in_use "$DECODE_NIXL_SIDE_CHANNEL_PORT"; do
     PREFILL_NIXL_SIDE_CHANNEL_PORT=$((PREFILL_NIXL_SIDE_CHANNEL_PORT + 1))
@@ -149,6 +163,7 @@ CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
             "shared_storage_path": "'"$EC_SHARED_STORAGE_PATH"'"
         }
     }' \
+    "${VISION_ZIP_ARGS[@]}" \
     >"${ENC_LOG}" 2>&1 &
 
 PIDS+=($!)
@@ -179,6 +194,7 @@ vllm serve "$MODEL" \
         "kv_connector": "NixlConnector",
         "kv_role": "kv_producer"
     }' \
+    "${VISION_ZIP_ARGS[@]}" \
     >"${P_LOG}" 2>&1 &
 
 PIDS+=($!)
@@ -202,6 +218,7 @@ vllm serve "$MODEL" \
         "kv_connector": "NixlConnector",
         "kv_role": "kv_consumer"
     }' \
+    "${VISION_ZIP_ARGS[@]}" \
     >"${D_LOG}" 2>&1 &
 
 PIDS+=($!)
