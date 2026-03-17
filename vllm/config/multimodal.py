@@ -172,6 +172,18 @@ class MultiModalConfig:
     Value sits in range [0;1) and determines fraction of media tokens
     from each video to be pruned.
     """
+    vision_zip_rate: float | None = Field(default=None, ge=0.0, lt=1.0)
+    """Sets the image-token pruning rate for VisionZip-style compression on
+    CLIP-backed LLaVA models. The value determines the fraction of selected
+    visual tokens pruned before they are projected into the language model."""
+    vision_zip_dominant_ratio: float = Field(default=54.0 / 64.0, gt=0.0, le=1.0)
+    """Fraction of kept VisionZip tokens reserved for dominant tokens chosen
+    from CLS attention. Remaining kept tokens are contextual tokens produced by
+    metric-based merging."""
+    vision_zip_attention_layer: int = -2
+    """Vision encoder layer index used to gather CLS attention and key states
+    for VisionZip compression. Negative values are relative to the full vision
+    encoder depth."""
 
     @field_validator("limit_per_prompt", mode="before")
     @classmethod
@@ -246,6 +258,9 @@ class MultiModalConfig:
             if self.mm_encoder_attn_backend is not None
             else None,
             self.mm_encoder_tp_mode,
+            self.vision_zip_rate,
+            self.vision_zip_dominant_ratio,
+            self.vision_zip_attention_layer,
         ]
         hash_str = safe_hash(str(factors).encode(), usedforsecurity=False).hexdigest()
         return hash_str
@@ -279,3 +294,6 @@ class MultiModalConfig:
 
     def is_multimodal_pruning_enabled(self):
         return self.video_pruning_rate is not None and self.video_pruning_rate > 0
+
+    def is_vision_zip_enabled(self) -> bool:
+        return self.vision_zip_rate is not None and self.vision_zip_rate > 0

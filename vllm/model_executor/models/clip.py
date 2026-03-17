@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from functools import cached_property
-from typing import Annotated, Literal
+from typing import Annotated, Literal, TypedDict
 
 import torch
 import torch.nn as nn
@@ -66,6 +66,11 @@ from .vision import (
     is_vit_use_data_parallel,
     resolve_visual_encoder_outputs,
 )
+
+
+class CLIPAttentionSummary(TypedDict):
+    cls_attention: torch.Tensor
+    key_states: torch.Tensor
 
 
 class CLIPImagePixelInputs(TensorSchema):
@@ -413,18 +418,67 @@ class CLIPAttention(nn.Module):
                 prefix=f"{prefix}.attn",
             )
 
+    def _reshape_states(self, states: torch.Tensor) -> torch.Tensor:
+        batch_size, seq_len, _ = states.shape
+        return states.view(
+            batch_size,
+            seq_len,
+            self.num_heads_per_partition,
+            self.head_dim,
+        ).transpose(1, 2)
+
+    def _build_attention_summary(
+        self,
+        query_states: torch.Tensor,
+        key_states: torch.Tensor,
+    ) -> CLIPAttentionSummary:
+        query_states = self._reshape_states(query_states)
+        key_states = self._reshape_states(key_states)
+
+        if self.tp_size > 1:
+            query_states = tensor_model_parallel_all_gather(
+                query_states.contiguous(),
+                dim=1,
+            )
+            key_states = tensor_model_parallel_all_gather(
+                key_states.contiguous(),
+                dim=1,
+            )
+
+        cls_query = query_states[:, :, :1, :]
+        cls_scores = torch.matmul(
+            cls_query * self.scale,
+            key_states.transpose(-1, -2),
+        )
+        cls_attention = torch.softmax(cls_scores, dim=-1).mean(dim=1).squeeze(1)
+
+        merged_keys = key_states.transpose(1, 2).reshape(
+            key_states.shape[0], key_states.shape[2], -1
+        )
+        return {
+            "cls_attention": cls_attention,
+            "key_states": merged_keys,
+        }
+
     def forward(
         self,
         hidden_states: torch.Tensor,
-    ):
+        return_attention_summary: bool = False,
+    ) -> tuple[torch.Tensor, CLIPAttentionSummary | None]:
         """Input shape: Batch x Time x Channel"""
 
         qkv_states, _ = self.qkv_proj(hidden_states)
         query_states, key_states, value_states = qkv_states.chunk(3, dim=-1)
+        attention_summary = None
+        if return_attention_summary:
+            attention_summary = self._build_attention_summary(
+                query_states,
+                key_states,
+            )
         out = self.attn(query_states, key_states, value_states)
         attn_output, _ = self.out_proj(out)
 
-        return attn_output, None
+        return attn_output, attention_summary
 
 
 class CLIPMLP(nn.Module):
@@ -490,11 +544,18 @@ class CLIPEncoderLayer(nn.Module):
         )
         self.layer_norm2 = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
 
-    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        return_attention_summary: bool = False,
+    ) -> tuple[torch.Tensor, CLIPAttentionSummary | None]:
         residual = hidden_states
 
         hidden_states = self.layer_norm1(hidden_states)
-        hidden_states, _ = self.self_attn(hidden_states=hidden_states)
+        hidden_states, attention_summary = self.self_attn(
+            hidden_states=hidden_states,
+            return_attention_summary=return_attention_summary,
+        )
         hidden_states = residual + hidden_states
 
         residual = hidden_states
@@ -502,7 +563,7 @@ class CLIPEncoderLayer(nn.Module):
         hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
-        return hidden_states
+        return hidden_states, attention_summary
 
 
 class CLIPEncoder(nn.Module):
@@ -548,19 +609,32 @@ class CLIPEncoder(nn.Module):
         self,
         inputs_embeds: torch.Tensor,
         return_all_hidden_states: bool,
-    ) -> torch.Tensor | list[torch.Tensor]:
+        attention_summary_layer: int | None = None,
+    ) -> tuple[torch.Tensor | list[torch.Tensor], CLIPAttentionSummary | None]:
         hidden_states_pool = [inputs_embeds]
         hidden_states = inputs_embeds
+        attention_summary = None
 
-        for encoder_layer in self.layers:
-            hidden_states = encoder_layer(hidden_states)
+        target_layer_idx = None
+        if attention_summary_layer is not None:
+            target_layer_idx = attention_summary_layer
+            if target_layer_idx < 0:
+                target_layer_idx += self.config.num_hidden_layers - len(self.layers)
+                target_layer_idx = len(self.layers) + target_layer_idx
+        for layer_idx, encoder_layer in enumerate(self.layers):
+            hidden_states, layer_attention_summary = encoder_layer(
+                hidden_states,
+                return_attention_summary=layer_idx == target_layer_idx,
+            )
+            if layer_attention_summary is not None:
+                attention_summary = layer_attention_summary
             if return_all_hidden_states:
                 hidden_states_pool.append(hidden_states)
         # If we have multiple feature sample layers, we return all hidden
         # states in order and grab the ones we need by index.
         if return_all_hidden_states:
-            return hidden_states_pool
-        return hidden_states
+            return hidden_states_pool, attention_summary
+        return hidden_states, attention_summary
 
 
 class CLIPTextTransformer(nn.Module):
@@ -608,7 +682,7 @@ class CLIPTextTransformer(nn.Module):
         last_hidden_state = self.encoder(
             inputs_embeds=hidden_states,
             return_all_hidden_states=False,
-        )
+        )[0]
         last_hidden_state = self.final_layer_norm(last_hidden_state)
 
         return last_hidden_state
@@ -700,7 +774,8 @@ class CLIPVisionTransformer(nn.Module):
         *,
         select_layers: list[int] | None = None,
         feature_select_strategy: VisionFeatureSelectStrategy | None = None,
-    ) -> torch.Tensor:
+        attention_summary_layer: int | None = None,
+    ) -> tuple[torch.Tensor, CLIPAttentionSummary | None]:
         hidden_states = self.embeddings(pixel_values)
         hidden_states = self.pre_layrnorm(hidden_states)
 
@@ -709,18 +784,20 @@ class CLIPVisionTransformer(nn.Module):
         encoder_outputs = self.encoder(
             inputs_embeds=hidden_states,
             return_all_hidden_states=select_layers is not None,
+            attention_summary_layer=attention_summary_layer,
         )
+        hidden_states_or_pool, attention_summary = encoder_outputs
 
         # Handle post-norm (if applicable) and stacks feature layers if needed
         encoder_outputs = resolve_visual_encoder_outputs(
-            encoder_outputs,
+            hidden_states_or_pool,
             self.post_layernorm,
             select_layers=select_layers,
             max_possible_layers=self.config.num_hidden_layers,
             feature_select_strategy=feature_select_strategy,
         )
 
-        return encoder_outputs
+        return encoder_outputs, attention_summary
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         stacked_params_mapping = [
@@ -786,12 +863,17 @@ class CLIPVisionModel(nn.Module):
         pixel_values: torch.Tensor,
         select_layers: list[int] | None = None,
         feature_select_strategy: VisionFeatureSelectStrategy | None = None,
-    ) -> torch.Tensor:
-        return self.vision_model(
+        attention_summary_layer: int | None = None,
+    ) -> torch.Tensor | tuple[torch.Tensor, CLIPAttentionSummary | None]:
+        encoder_outputs, attention_summary = self.vision_model(
             pixel_values,
             select_layers=select_layers,
             feature_select_strategy=feature_select_strategy,
+            attention_summary_layer=attention_summary_layer,
         )
+        if attention_summary_layer is None:
+            return encoder_outputs
+        return encoder_outputs, attention_summary
 
     @property
     def dtype(self):
@@ -900,7 +982,7 @@ class CLIPEmbeddingModel(nn.Module, SupportsMultiModal, SupportsQuant):
             pixel_values=pixel_values,
             select_layers=None,
             feature_select_strategy=feature_select_strategy,
-        )
+        )[0]
 
         image_features = self.visual_projection(pooled_output)
 

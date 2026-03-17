@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import math
 from abc import abstractmethod
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Annotated, Final, Literal, Protocol, TypeAlias, TypeVar
@@ -172,6 +173,130 @@ class LlavaLikeProcessor(Protocol):
     image_token: Final[str]
 
 
+class _VisionZipMultiModalConfig(Protocol):
+    vision_zip_rate: float | None
+    vision_zip_dominant_ratio: float
+    vision_zip_attention_layer: int
+
+    def is_vision_zip_enabled(self) -> bool: ...
+
+
+def _get_llava_vision_zip_config(
+    mm_config: _VisionZipMultiModalConfig | None,
+) -> _VisionZipMultiModalConfig | None:
+    if mm_config is None or not mm_config.is_vision_zip_enabled():
+        return None
+    return mm_config
+
+
+def get_llava_vision_zip_num_tokens(
+    num_selected_tokens: int,
+    mm_config: _VisionZipMultiModalConfig | None,
+) -> int:
+    vision_zip_config = _get_llava_vision_zip_config(mm_config)
+    if vision_zip_config is None:
+        return num_selected_tokens
+
+    keep_tokens = math.ceil(
+        num_selected_tokens * (1.0 - vision_zip_config.vision_zip_rate)
+    )
+    return max(1, min(num_selected_tokens, keep_tokens))
+
+
+def _get_llava_vision_zip_split(
+    keep_tokens: int,
+    dominant_ratio: float,
+) -> tuple[int, int]:
+    dominant_tokens = math.ceil(keep_tokens * dominant_ratio)
+    dominant_tokens = max(1, min(keep_tokens, dominant_tokens))
+    contextual_tokens = keep_tokens - dominant_tokens
+    return dominant_tokens, contextual_tokens
+
+
+def apply_llava_vision_zip(
+    image_features: torch.Tensor,
+    cls_attention: torch.Tensor,
+    key_states: torch.Tensor,
+    mm_config: _VisionZipMultiModalConfig | None,
+) -> torch.Tensor:
+    vision_zip_config = _get_llava_vision_zip_config(mm_config)
+    if vision_zip_config is None:
+        return image_features
+
+    batch_size, num_tokens, hidden_size = image_features.shape
+    if num_tokens == 0:
+        return image_features
+
+    keep_tokens = get_llava_vision_zip_num_tokens(num_tokens, vision_zip_config)
+    if keep_tokens >= num_tokens:
+        return image_features
+
+    dominant_tokens, contextual_tokens = _get_llava_vision_zip_split(
+        keep_tokens,
+        vision_zip_config.vision_zip_dominant_ratio,
+    )
+    dominant_tokens = min(dominant_tokens, num_tokens)
+
+    dominant_indices = cls_attention.topk(
+        k=dominant_tokens, dim=-1, largest=True, sorted=True
+    ).indices
+    dominant_index_mask = torch.zeros(
+        (batch_size, num_tokens), device=image_features.device, dtype=torch.bool
+    )
+    dominant_index_mask.scatter_(1, dominant_indices, True)
+
+    dominant_features = image_features.gather(
+        1, dominant_indices.unsqueeze(-1).expand(-1, -1, hidden_size)
+    )
+    if contextual_tokens == 0 or dominant_tokens == num_tokens:
+        return dominant_features
+
+    contextual_features = []
+    arange_tokens = torch.arange(num_tokens, device=image_features.device)
+    for batch_idx in range(batch_size):
+        remaining_mask = ~dominant_index_mask[batch_idx]
+        remaining_indices = arange_tokens[remaining_mask]
+        if remaining_indices.numel() == 0:
+            contextual_features.append(
+                image_features.new_empty((0, hidden_size))
+            )
+            continue
+
+        remaining_keys = key_states[batch_idx, remaining_indices]
+        num_contextual = min(contextual_tokens, remaining_indices.numel())
+        target_token_indices = torch.stack([
+            remaining_indices[chunk[0]]
+            for chunk in torch.tensor_split(
+                torch.arange(
+                    remaining_indices.numel(),
+                    device=image_features.device,
+                ),
+                num_contextual,
+            )
+        ])
+        target_keys = key_states[batch_idx, target_token_indices]
+
+        similarity = torch.matmul(remaining_keys, target_keys.transpose(0, 1))
+        assignments = similarity.argmax(dim=-1)
+        merged = image_features.new_zeros((target_token_indices.shape[0], hidden_size))
+        counts = image_features.new_zeros((target_token_indices.shape[0], 1))
+        merged.index_add_(0, assignments, image_features[batch_idx, remaining_indices])
+        counts.index_add_(0, assignments, counts.new_ones((assignments.shape[0], 1)))
+        merged = merged / counts.clamp_min_(1.0)
+        contextual_features.append(merged)
+
+    if contextual_features[0].shape[0] == 0:
+        return dominant_features
+
+    contextual_tensor = image_features.new_zeros(
+        (batch_size, contextual_features[0].shape[0], hidden_size)
+    )
+    for batch_idx, features in enumerate(contextual_features):
+        contextual_tensor[batch_idx, : features.shape[0]] = features
+
+    return torch.cat([dominant_features, contextual_tensor], dim=1)
+
+
 class BaseLlavaProcessingInfo(BaseProcessingInfo):
     def get_hf_config(self) -> LlavaLikeConfig:
         return self.ctx.get_hf_config(LlavaConfig)
@@ -186,6 +311,10 @@ class BaseLlavaProcessingInfo(BaseProcessingInfo):
     def get_supported_mm_limits(self) -> Mapping[str, int | None]:
         return {"image": None}
 
+    def get_llava_vision_zip_config(self) -> _VisionZipMultiModalConfig | None:
+        mm_config = self.ctx.model_config.multimodal_config
+        return _get_llava_vision_zip_config(mm_config)
+
     def get_num_image_tokens(
         self,
         *,
@@ -195,12 +324,16 @@ class BaseLlavaProcessingInfo(BaseProcessingInfo):
         hf_config = self.get_hf_config()
         vision_encoder_info = self.get_vision_encoder_info()
 
-        return get_num_selected_vision_tokens(
+        num_selected_tokens = get_num_selected_vision_tokens(
             vision_encoder_info.get_num_image_tokens(
                 image_width=image_width,
                 image_height=image_height,
             ),
             hf_config.vision_feature_select_strategy,
+        )
+        return get_llava_vision_zip_num_tokens(
+            num_selected_tokens,
+            self.get_llava_vision_zip_config(),
         )
 
     def get_image_size_with_most_features(self) -> ImageSize:
@@ -543,11 +676,36 @@ class LlavaForConditionalGeneration(
 
         self.config = config
         self.multimodal_config = multimodal_config
+        self.vision_zip_config = _get_llava_vision_zip_config(multimodal_config)
 
         self.configure_mm_token_handling(
             vocab_size=config.text_config.vocab_size,
             mm_token_ids=[config.image_token_index],
         )
+
+        if self.vision_zip_config is not None:
+            if not isinstance(config.vision_config, CLIPVisionConfig):
+                raise ValueError(
+                    "VisionZip is currently only supported for CLIP-backed "
+                    "LLaVA vision towers."
+                )
+            if config.vision_feature_select_strategy != "default":
+                raise ValueError(
+                    "VisionZip currently requires "
+                    "`vision_feature_select_strategy='default'`."
+                )
+            num_loaded_layers = _get_num_hidden_layers(config)
+            requested_attention_layer = get_layer_index(
+                self.vision_zip_config.vision_zip_attention_layer,
+                config.vision_config.num_hidden_layers,
+            )
+            if requested_attention_layer > num_loaded_layers:
+                raise ValueError(
+                    "VisionZip attention layer must be available in the "
+                    "loaded vision tower. Reduce "
+                    "`vision_zip_attention_layer` or increase the loaded "
+                    "vision feature depth."
+                )
 
         # NOTE: These are special cases for Pixtral-12B in the HF-format
         # https://huggingface.co/mistral-community/pixtral-12b/blob/main/config.json  # noqa
@@ -628,6 +786,23 @@ class LlavaForConditionalGeneration(
         vision_tower: CLIPVisionModel | SiglipVisionModel | PixtralHFVisionModel,
         pixel_values: torch.Tensor | list[torch.Tensor],
     ) -> torch.Tensor | tuple[torch.Tensor, ...]:
+        if (
+            self.vision_zip_config is not None
+            and isinstance(vision_tower, CLIPVisionModel)
+        ):
+            image_features, attention_summary = vision_tower(
+                pixel_values,
+                feature_select_strategy="full",
+                attention_summary_layer=self.vision_zip_config.vision_zip_attention_layer,
+            )
+            assert attention_summary is not None
+            return apply_llava_vision_zip(
+                image_features[:, 1:, :],
+                attention_summary["cls_attention"][:, 1:],
+                attention_summary["key_states"][:, 1:, :],
+                self.vision_zip_config,
+            )
+
         # NOTE: we skip the step to select the vision feature layer since
         # this is already done inside the vision tower
         return vision_tower(
