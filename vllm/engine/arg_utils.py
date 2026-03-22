@@ -498,6 +498,10 @@ class EngineArgs:
     io_processor_plugin: str | None = None
     skip_mm_profiling: bool = MultiModalConfig.skip_mm_profiling
     video_pruning_rate: float | None = MultiModalConfig.video_pruning_rate
+    vision_zip_rate: float | None = MultiModalConfig.vision_zip_rate
+    vision_zip_dominant_ratio: float = MultiModalConfig.vision_zip_dominant_ratio
+    vision_zip_attention_layer: int = MultiModalConfig.vision_zip_attention_layer
+    vision_zip_debug: bool = MultiModalConfig.vision_zip_debug
     # LoRA fields
     enable_lora: bool = False
     max_loras: int = LoRAConfig.max_loras
@@ -1089,6 +1093,9 @@ class EngineArgs:
             "--vision-zip-attention-layer",
             **multimodal_kwargs["vision_zip_attention_layer"],
         )
+        multimodal_group.add_argument(
+            "--vision-zip-debug", **multimodal_kwargs["vision_zip_debug"]
+        )
 
         # LoRA related configs
         lora_kwargs = get_kwargs(LoRAConfig)
@@ -1397,6 +1404,10 @@ class EngineArgs:
             override_attention_dtype=self.override_attention_dtype,
             logits_processors=self.logits_processors,
             video_pruning_rate=self.video_pruning_rate,
+            vision_zip_rate=self.vision_zip_rate,
+            vision_zip_dominant_ratio=self.vision_zip_dominant_ratio,
+            vision_zip_attention_layer=self.vision_zip_attention_layer,
+            vision_zip_debug=self.vision_zip_debug,
             io_processor_plugin=self.io_processor_plugin,
         )
 

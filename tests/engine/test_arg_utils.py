@@ -475,11 +475,13 @@ def test_vision_zip_args():
         "0.75",
         "--vision-zip-attention-layer",
         "-3",
+        "--vision-zip-debug",
     ])
 
     assert args.vision_zip_rate == 0.5
     assert args.vision_zip_dominant_ratio == 0.75
     assert args.vision_zip_attention_layer == -3
+    assert args.vision_zip_debug is True
 
 
 def test_human_readable_model_len():

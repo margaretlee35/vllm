@@ -184,6 +184,9 @@ class MultiModalConfig:
     """Vision encoder layer index used to gather CLS attention and key states
     for VisionZip compression. Negative values are relative to the full vision
     encoder depth."""
+    vision_zip_debug: bool = False
+    """When enabled, emits VisionZip compression stats including the number of
+    pruned visual tokens."""
 
     @field_validator("limit_per_prompt", mode="before")
     @classmethod

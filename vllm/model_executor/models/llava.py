@@ -21,6 +21,7 @@ from transformers.models.pixtral import PixtralProcessor
 
 from vllm.config import VllmConfig
 from vllm.config.multimodal import BaseDummyOptions
+from vllm.logger import init_logger
 from vllm.model_executor.layers.activation import get_act_fn
 from vllm.model_executor.layers.linear import ColumnParallelLinear, RowParallelLinear
 from vllm.model_executor.layers.quantization import QuantizationConfig
@@ -72,6 +73,8 @@ from .utils import (
     maybe_prefix,
 )
 from .vision import get_num_selected_vision_tokens, get_vision_encoder_info
+
+logger = init_logger(__name__)
 
 
 class LlavaImagePixelInputs(TensorSchema):
@@ -177,6 +180,7 @@ class _VisionZipMultiModalConfig(Protocol):
     vision_zip_rate: float | None
     vision_zip_dominant_ratio: float
     vision_zip_attention_layer: int
+    vision_zip_debug: bool
 
     def is_vision_zip_enabled(self) -> bool: ...
 
@@ -230,6 +234,15 @@ def apply_llava_vision_zip(
     keep_tokens = get_llava_vision_zip_num_tokens(num_tokens, vision_zip_config)
     if keep_tokens >= num_tokens:
         return image_features
+
+    if vision_zip_config.vision_zip_debug:
+        logger.info(
+            "VisionZip pruned %d/%d visual tokens per image (kept %d, batch size %d).",
+            num_tokens - keep_tokens,
+            num_tokens,
+            keep_tokens,
+            batch_size,
+        )
 
     dominant_tokens, contextual_tokens = _get_llava_vision_zip_split(
         keep_tokens,
