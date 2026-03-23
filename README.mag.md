@@ -8,6 +8,7 @@ Quick setup and run guide for the vLLM repo.
 git clone {our repo .git}
 cd vllm
 uv venv                    # if no venv not yet created
+source .venv/bin/activate
 VLLM_USE_PRECOMPILED=1 uv pip install --editable .
 uv pip install "vllm[bench]"
 ```
