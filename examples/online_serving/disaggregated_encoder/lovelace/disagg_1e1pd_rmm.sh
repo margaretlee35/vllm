@@ -31,6 +31,7 @@ VISION_ZIP_RATE="${VISION_ZIP_RATE:-}"
 VISION_ZIP_DOMINANT_RATIO="${VISION_ZIP_DOMINANT_RATIO:-}"
 VISION_ZIP_ATTENTION_LAYER="${VISION_ZIP_ATTENTION_LAYER:-}"
 IMAGES_PER_REQ="${IMAGES_PER_REQ:-1}"
+METRICS_SAMPLING_INTERVAL_SECONDS="${METRICS_SAMPLING_INTERVAL_SECONDS:-1}"
 
 ulimit -n "${ULIMIT_NOFILE:-65535}" >/dev/null 2>&1 || true
 
@@ -51,6 +52,50 @@ wait_for_server() {
         until curl -s localhost:$port/v1/chat/completions > /dev/null; do
             sleep 1
         done" && return 0 || return 1
+}
+
+scrape_kv_cache_usage() {
+    local port=$1
+    local response
+    response=$(curl -fsS "http://127.0.0.1:${port}/metrics" 2>/dev/null || true)
+    if [[ -z "$response" ]]; then
+        echo "NA"
+        return 0
+    fi
+
+    awk '$1 == "vllm:kv_cache_usage_perc" {print $NF; found=1; exit} END {if (!found) print "NA"}' <<< "$response"
+}
+
+log_gpu_sm_utilization() {
+    local ts=$1
+    local output
+
+    if ! command -v nvidia-smi >/dev/null 2>&1; then
+        return 0
+    fi
+
+    output=$(nvidia-smi \
+        --query-gpu=index,utilization.gpu,utilization.memory,memory.used \
+        --format=csv,noheader,nounits \
+        -i "$GPU_E,$GPU_PD" 2>/dev/null || true)
+
+    if [[ -z "$output" ]]; then
+        return 0
+    fi
+
+    while IFS=',' read -r gpu_index sm_util mem_util mem_used; do
+        gpu_index=$(echo "$gpu_index" | xargs)
+        sm_util=$(echo "$sm_util" | xargs)
+        mem_util=$(echo "$mem_util" | xargs)
+        mem_used=$(echo "$mem_used" | xargs)
+        local role="unknown"
+        if [[ "$gpu_index" == "$GPU_E" ]]; then
+            role="encoder"
+        elif [[ "$gpu_index" == "$GPU_PD" ]]; then
+            role="prefill_decode"
+        fi
+        echo "$ts,$role,$gpu_index,$sm_util,$mem_util,$mem_used" >> "$SM_LOG"
+    done <<< "$output"
 }
 
 # Cleanup function
@@ -203,14 +248,19 @@ echo "All services are up!"
 # KV cache monitoring (time series)
 ###############################################################################
 KV_LOG=$LOG_PATH/kv_${START_TIME}.log
+SM_LOG=$LOG_PATH/sm_${START_TIME}.log
+
+echo "timestamp,encoder_kv_cache_usage,prefill_decode_kv_cache_usage" > "$KV_LOG"
+echo "timestamp,role,gpu_index,sm_utilization_pct,memory_utilization_pct,memory_used_mib" > "$SM_LOG"
 
 (
   while true; do
     ts=$(date +%s)
-    enc=$(curl -s "http://127.0.0.1:${ENCODE_PORT}/metrics" | awk '/vllm:kv_cache_usage_perc/ {print $NF; exit}')
-    pd=$(curl -s "http://127.0.0.1:${PREFILL_DECODE_PORT}/metrics" | awk '/vllm:kv_cache_usage_perc/ {print $NF; exit}')
+    enc=$(scrape_kv_cache_usage "$ENCODE_PORT")
+    pd=$(scrape_kv_cache_usage "$PREFILL_DECODE_PORT")
     echo "$ts,$enc,$pd" >> "$KV_LOG"
-    sleep 1
+    log_gpu_sm_utilization "$ts"
+    sleep "$METRICS_SAMPLING_INTERVAL_SECONDS"
   done
 ) &
 PIDS+=($!)
