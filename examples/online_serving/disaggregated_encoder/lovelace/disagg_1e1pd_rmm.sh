@@ -75,7 +75,7 @@ log_gpu_sm_utilization() {
     fi
 
     output=$(nvidia-smi \
-        --query-gpu=index,utilization.gpu,utilization.memory,memory.used \
+        --query-gpu=index,utilization.gpu,utilization.memory,memory.used,power.draw \
         --format=csv,noheader,nounits \
         -i "$GPU_E,$GPU_PD" 2>/dev/null || true)
 
@@ -83,18 +83,19 @@ log_gpu_sm_utilization() {
         return 0
     fi
 
-    while IFS=',' read -r gpu_index sm_util mem_util mem_used; do
+    while IFS=',' read -r gpu_index sm_util mem_util mem_used power_draw; do
         gpu_index=$(echo "$gpu_index" | xargs)
         sm_util=$(echo "$sm_util" | xargs)
         mem_util=$(echo "$mem_util" | xargs)
         mem_used=$(echo "$mem_used" | xargs)
+        power_draw=$(echo "$power_draw" | xargs)
         local role="unknown"
         if [[ "$gpu_index" == "$GPU_E" ]]; then
             role="encoder"
         elif [[ "$gpu_index" == "$GPU_PD" ]]; then
             role="prefill_decode"
         fi
-        echo "$ts,$role,$gpu_index,$sm_util,$mem_util,$mem_used" >> "$SM_LOG"
+        echo "$ts,$role,$gpu_index,$sm_util,$mem_util,$mem_used,$power_draw" >> "$SM_LOG"
     done <<< "$output"
 }
 
@@ -251,7 +252,7 @@ KV_LOG=$LOG_PATH/kv_${START_TIME}.log
 SM_LOG=$LOG_PATH/sm_${START_TIME}.log
 
 echo "timestamp,encoder_kv_cache_usage,prefill_decode_kv_cache_usage" > "$KV_LOG"
-echo "timestamp,role,gpu_index,sm_utilization_pct,memory_utilization_pct,memory_used_mib" > "$SM_LOG"
+echo "timestamp,role,gpu_index,sm_utilization_pct,memory_utilization_pct,memory_used_mib,power_draw_watts" > "$SM_LOG"
 
 (
   while true; do
