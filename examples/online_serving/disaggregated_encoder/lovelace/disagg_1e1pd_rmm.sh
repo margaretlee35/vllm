@@ -32,6 +32,8 @@ VISION_ZIP_DOMINANT_RATIO="${VISION_ZIP_DOMINANT_RATIO:-}"
 VISION_ZIP_ATTENTION_LAYER="${VISION_ZIP_ATTENTION_LAYER:-}"
 IMAGES_PER_REQ="${IMAGES_PER_REQ:-1}"
 METRICS_SAMPLING_INTERVAL_SECONDS="${METRICS_SAMPLING_INTERVAL_SECONDS:-1}"
+GPU_PROFILER="${GPU_PROFILER:-none}"   # none | nsys | ncu
+NSYS_GPU_METRICS_FREQUENCY="${NSYS_GPU_METRICS_FREQUENCY:-1000}"
 
 ulimit -n "${ULIMIT_NOFILE:-65535}" >/dev/null 2>&1 || true
 
@@ -45,6 +47,7 @@ START_TIME=$(date +"%Y%m%d_%H%M%S")
 ENC_LOG=$LOG_PATH/encoder_${START_TIME}.log
 PD_LOG=$LOG_PATH/pd_${START_TIME}.log
 PROXY_LOG=$LOG_PATH/proxy_${START_TIME}.log
+PROFILE_LOG_DIR="${PROFILE_LOG_DIR:-$LOG_PATH/profiler_${START_TIME}}"
 
 wait_for_server() {
     local port=$1
@@ -97,6 +100,64 @@ log_gpu_sm_utilization() {
         fi
         echo "$ts,$role,$gpu_index,$sm_util,$mem_util,$mem_used,$power_draw" >> "$SM_LOG"
     done <<< "$output"
+}
+
+validate_profiler() {
+    case "$GPU_PROFILER" in
+        none)
+            return 0
+            ;;
+        nsys)
+            command -v nsys >/dev/null 2>&1 || {
+                echo "GPU_PROFILER=nsys requested, but nsys is not installed." >&2
+                exit 1
+            }
+            mkdir -p "$PROFILE_LOG_DIR"
+            ;;
+        ncu)
+            command -v ncu >/dev/null 2>&1 || {
+                echo "GPU_PROFILER=ncu requested, but ncu is not installed." >&2
+                exit 1
+            }
+            mkdir -p "$PROFILE_LOG_DIR"
+            ;;
+        *)
+            echo "Unsupported GPU_PROFILER='$GPU_PROFILER'. Use one of: none, nsys, ncu." >&2
+            exit 1
+            ;;
+    esac
+}
+
+start_worker() {
+    local worker_name=$1
+    local log_file=$2
+    shift 2
+
+    case "$GPU_PROFILER" in
+        none)
+            "$@" >"${log_file}" 2>&1 &
+            ;;
+        nsys)
+            nsys profile \
+                --force-overwrite true \
+                --sample=none \
+                --trace=cuda,nvtx,osrt \
+                --gpu-metrics-device=all \
+                --gpu-metrics-frequency="$NSYS_GPU_METRICS_FREQUENCY" \
+                --output "${PROFILE_LOG_DIR}/${worker_name}" \
+                "$@" >"${log_file}" 2>&1 &
+            ;;
+        ncu)
+            ncu \
+                --target-processes all \
+                --set default \
+                --force-overwrite \
+                --export "${PROFILE_LOG_DIR}/${worker_name}" \
+                "$@" >"${log_file}" 2>&1 &
+            ;;
+    esac
+
+    PIDS+=($!)
 }
 
 # Cleanup function
@@ -152,6 +213,8 @@ trap cleanup INT
 trap cleanup USR1
 trap cleanup TERM
 
+validate_profiler
+
 # clear previous cache
 echo "remove previous ec cache folder"
 rm -rf "$EC_SHARED_STORAGE_PATH"
@@ -178,7 +241,8 @@ printf 'VISION_ZIP_ARGS: %q\n' "${VISION_ZIP_ARGS[@]}"
 ###############################################################################
 # Encoder worker
 ###############################################################################
-CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
+start_worker encoder "$ENC_LOG" env CUDA_VISIBLE_DEVICES="$GPU_E" \
+    vllm serve "$MODEL" \
     --gpu-memory-utilization 0.05 \
     --port "$ENCODE_PORT" \
     --enforce-eager \
@@ -195,14 +259,13 @@ CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
         }
     }' \
     "${VISION_ZIP_ARGS[@]}" \
-    >"${ENC_LOG}" 2>&1 &
-
-PIDS+=($!)
+    
 
 ###############################################################################
 # Prefill+Decode worker
 ###############################################################################
-CUDA_VISIBLE_DEVICES="$GPU_PD" vllm serve "$MODEL" \
+start_worker prefill_decode "$PD_LOG" env CUDA_VISIBLE_DEVICES="$GPU_PD" \
+    vllm serve "$MODEL" \
     --gpu-memory-utilization "$PD_GPU_MEMORY_UTILIZATION" \
     --port "$PREFILL_DECODE_PORT" \
     --enforce-eager \
@@ -219,9 +282,7 @@ CUDA_VISIBLE_DEVICES="$GPU_PD" vllm serve "$MODEL" \
         }
     }' \
     "${VISION_ZIP_ARGS[@]}" \
-    >"${PD_LOG}" 2>&1 &
-
-PIDS+=($!)
+    
 
 # Wait for workers
 wait_for_server "$ENCODE_PORT"
