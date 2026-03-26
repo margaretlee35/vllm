@@ -33,6 +33,8 @@ VISION_ZIP_ATTENTION_LAYER="${VISION_ZIP_ATTENTION_LAYER:-}"
 IMAGES_PER_REQ="${IMAGES_PER_REQ:-1}"
 METRICS_SAMPLING_INTERVAL_SECONDS="${METRICS_SAMPLING_INTERVAL_SECONDS:-1}"
 GPU_PROFILER="${GPU_PROFILER:-none}"   # none | nsys | ncu
+NSYS_ENABLE_GPU_METRICS="${NSYS_ENABLE_GPU_METRICS:-1}"
+NSYS_GPU_METRICS_DEVICES="${NSYS_GPU_METRICS_DEVICES:-all}"
 NSYS_GPU_METRICS_FREQUENCY="${NSYS_GPU_METRICS_FREQUENCY:-1000}"
 
 ulimit -n "${ULIMIT_NOFILE:-65535}" >/dev/null 2>&1 || true
@@ -132,18 +134,24 @@ start_worker() {
     local worker_name=$1
     local log_file=$2
     shift 2
+    local -a nsys_args=()
 
     case "$GPU_PROFILER" in
         none)
             "$@" >"${log_file}" 2>&1 &
             ;;
         nsys)
+            if [[ "$NSYS_ENABLE_GPU_METRICS" == "1" ]]; then
+                nsys_args+=(
+                    --gpu-metrics-devices="$NSYS_GPU_METRICS_DEVICES"
+                    --gpu-metrics-frequency="$NSYS_GPU_METRICS_FREQUENCY"
+                )
+            fi
             nsys profile \
                 --force-overwrite true \
                 --sample=none \
                 --trace=cuda,nvtx,osrt \
-                --gpu-metrics-device=all \
-                --gpu-metrics-frequency="$NSYS_GPU_METRICS_FREQUENCY" \
+                "${nsys_args[@]}" \
                 --output "${PROFILE_LOG_DIR}/${worker_name}" \
                 "$@" >"${log_file}" 2>&1 &
             ;;
