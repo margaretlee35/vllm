@@ -34,7 +34,7 @@ IMAGES_PER_REQ="${IMAGES_PER_REQ:-1}"
 METRICS_SAMPLING_INTERVAL_SECONDS="${METRICS_SAMPLING_INTERVAL_SECONDS:-1}"
 GPU_PROFILER="${GPU_PROFILER:-none}"   # none | nsys | ncu
 NSYS_ENABLE_GPU_METRICS="${NSYS_ENABLE_GPU_METRICS:-1}"
-NSYS_GPU_METRICS_DEVICES="${NSYS_GPU_METRICS_DEVICES:-all}"
+NSYS_GPU_METRICS_DEVICES="${NSYS_GPU_METRICS_DEVICES:-$GPU_E,$GPU_PD}"
 NSYS_GPU_METRICS_FREQUENCY="${NSYS_GPU_METRICS_FREQUENCY:-1000}"
 
 ulimit -n "${ULIMIT_NOFILE:-65535}" >/dev/null 2>&1 || true
@@ -133,12 +133,13 @@ validate_profiler() {
 start_worker() {
     local worker_name=$1
     local log_file=$2
-    shift 2
+    local cuda_visible_devices=$3
+    shift 3
     local -a nsys_args=()
 
     case "$GPU_PROFILER" in
         none)
-            "$@" >"${log_file}" 2>&1 &
+            CUDA_VISIBLE_DEVICES="$cuda_visible_devices" "$@" >"${log_file}" 2>&1 &
             ;;
         nsys)
             if [[ "$NSYS_ENABLE_GPU_METRICS" == "1" ]]; then
@@ -153,10 +154,10 @@ start_worker() {
                 --trace=cuda,nvtx,osrt \
                 "${nsys_args[@]}" \
                 --output "${PROFILE_LOG_DIR}/${worker_name}" \
-                "$@" >"${log_file}" 2>&1 &
+                env CUDA_VISIBLE_DEVICES="$cuda_visible_devices" "$@" >"${log_file}" 2>&1 &
             ;;
         ncu)
-            ncu \
+            env CUDA_VISIBLE_DEVICES="$cuda_visible_devices" ncu \
                 --target-processes all \
                 --set default \
                 --force-overwrite \
@@ -249,7 +250,7 @@ printf 'VISION_ZIP_ARGS: %q\n' "${VISION_ZIP_ARGS[@]}"
 ###############################################################################
 # Encoder worker
 ###############################################################################
-start_worker encoder "$ENC_LOG" env CUDA_VISIBLE_DEVICES="$GPU_E" \
+start_worker encoder "$ENC_LOG" "$GPU_E" \
     vllm serve "$MODEL" \
     --gpu-memory-utilization 0.05 \
     --port "$ENCODE_PORT" \
@@ -272,7 +273,7 @@ start_worker encoder "$ENC_LOG" env CUDA_VISIBLE_DEVICES="$GPU_E" \
 ###############################################################################
 # Prefill+Decode worker
 ###############################################################################
-start_worker prefill_decode "$PD_LOG" env CUDA_VISIBLE_DEVICES="$GPU_PD" \
+start_worker prefill_decode "$PD_LOG" "$GPU_PD" \
     vllm serve "$MODEL" \
     --gpu-memory-utilization "$PD_GPU_MEMORY_UTILIZATION" \
     --port "$PREFILL_DECODE_PORT" \
