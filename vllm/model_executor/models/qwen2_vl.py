@@ -86,6 +86,7 @@ from vllm.multimodal.processing import (
     PromptReplacement,
     PromptUpdate,
 )
+from vllm.pruning.prune_utils import SimpleCDPruner
 from vllm.sequence import IntermediateTensors
 from vllm.tokenizers import TokenizerLike
 from vllm.utils.tensor_schema import TensorSchema, TensorShape
@@ -1128,7 +1129,11 @@ class Qwen2VLMultiModalProcessor(BaseMultiModalProcessor[Qwen2VLProcessingInfo])
     dummy_inputs=Qwen2VLDummyInputsBuilder,
 )
 class Qwen2VLForConditionalGeneration(
-    nn.Module, SupportsMultiModal, SupportsLoRA, SupportsPP, SupportsMRoPE
+    nn.Module,
+    SupportsMultiModal,
+    SupportsLoRA,
+    SupportsPP,
+    SupportsMRoPE,
 ):
     # To ensure correct weight loading and mapping.
     hf_to_vllm_mapper = WeightsMapper(
@@ -1230,7 +1235,9 @@ class Qwen2VLForConditionalGeneration(
 
         raise ValueError("Only image or video modality is supported")
 
-    def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
+    def __init__(
+        self, *, vllm_config: VllmConfig, prefix: str = "", cd_prune: bool = False
+    ):
         super().__init__()
         config: Qwen2VLConfig = vllm_config.model_config.hf_config
         quant_config = vllm_config.quant_config
@@ -1239,6 +1246,7 @@ class Qwen2VLForConditionalGeneration(
         self.use_data_parallel = multimodal_config.mm_encoder_tp_mode == "data"
         self.config = config
         self.multimodal_config = multimodal_config
+        self.cd_prune = cd_prune
 
         with self._mark_tower_model(vllm_config, {"image", "video"}):
             self.visual = Qwen2VisionTransformer(
@@ -1389,10 +1397,16 @@ class Qwen2VLForConditionalGeneration(
             if modality == "images":
                 image_input = modalities["images"]
                 image_embeddings = self._process_image_input(image_input)
+                if self.cd_prune:
+                    pruner = SimpleCDPruner()
+                    image_embeddings = tuple(pruner(emb) for emb in image_embeddings)
                 multimodal_embeddings += tuple(image_embeddings)
             if modality == "videos":
                 video_input = modalities["videos"]
                 video_embeddings = self._process_video_input(video_input)
+                if self.cd_prune:
+                    pruner = SimpleCDPruner()
+                    video_embeddings = tuple(pruner(emb) for emb in video_embeddings)
                 multimodal_embeddings += tuple(video_embeddings)
 
         return multimodal_embeddings
@@ -1421,7 +1435,6 @@ class Qwen2VLForConditionalGeneration(
 
         if intermediate_tensors is not None:
             inputs_embeds = None
-
         hidden_states = self.language_model.model(
             input_ids=input_ids,
             positions=positions,
