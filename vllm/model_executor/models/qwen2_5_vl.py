@@ -70,10 +70,9 @@ from vllm.model_executor.models.module_mapping import MultiModelKeys
 from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.multimodal.evs import (
     compute_mrope_for_media,
-    compute_retained_tokens_count,
-    compute_retention_mask,
     recompute_mrope_positions,
 )
+from vllm.multimodal.token_pruning import get_pruning_strategy
 from vllm.multimodal.inputs import (
     MultiModalFeatureSpec,
     MultiModalFieldConfig,
@@ -961,19 +960,19 @@ class Qwen2_5_VLMultiModalProcessor(Qwen2VLMultiModalProcessor):
 
             # EVS-specific code
             video_pruning_rate = self.info.ctx.get_mm_config().video_pruning_rate
-            if (
-                modality == "video"
-                and video_pruning_rate is not None
-                and video_pruning_rate > 0.0
+            mm_pruning_config = self.info.ctx.get_mm_config().mm_pruning_config
+            if modality == "video" and (
+                (video_pruning_rate is not None and video_pruning_rate > 0.0)
+                or mm_pruning_config is not None
             ):
                 T, H, W = map(int, grid_thw)
                 tokens_per_frame = (H // image_processor.merge_size) * (
                     W // image_processor.merge_size
                 )
-                num_tokens = compute_retained_tokens_count(
+                strategy = get_pruning_strategy(mm_pruning_config, video_pruning_rate)
+                num_tokens = strategy.get_retained_token_count(
                     tokens_per_frame,
                     T,
-                    video_pruning_rate,
                 )
             # End of EVS-specific code
 
@@ -1314,11 +1313,12 @@ class Qwen2_5_VLForConditionalGeneration(
             video_embeds_split, grid_thw_list, second_per_grid_ts
         ):
             # For each video, we compute retention mask using EVS
-            retention_mask = compute_retention_mask(
+            mm_pruning_config = self.multimodal_config.mm_pruning_config if hasattr(self, 'multimodal_config') else None
+            strategy = get_pruning_strategy(mm_pruning_config, self.video_pruning_rate)
+            retention_mask = strategy.get_retention_mask(
                 emb,
                 size,
                 spatial_merge_size=self.visual.spatial_merge_size,
-                q=self.video_pruning_rate,
             )
             positions = compute_mrope_for_media(
                 size,

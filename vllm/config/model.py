@@ -310,6 +310,7 @@ class ModelConfig:
     interleave_mm_strings: InitVar[bool | None] = None
     skip_mm_profiling: InitVar[bool | None] = None
     video_pruning_rate: InitVar[float | None] = None
+    mm_pruning_config: InitVar[str | dict[str, Any] | None] = None
 
     def compute_hash(self) -> str:
         """
@@ -430,6 +431,7 @@ class ModelConfig:
         interleave_mm_strings: bool | None,
         skip_mm_profiling: bool | None,
         video_pruning_rate: float | None,
+        mm_pruning_config: str | dict[str, Any] | None = None,
     ) -> None:
         # Keep set served_model_name before maybe_model_redirect(self.model)
         self.served_model_name = get_served_model_name(
@@ -612,7 +614,15 @@ class ModelConfig:
                 interleave_mm_strings=interleave_mm_strings,
                 skip_mm_profiling=skip_mm_profiling,
                 video_pruning_rate=video_pruning_rate,
+                mm_pruning_config=mm_pruning_config,
             )
+
+            if isinstance(mm_pruning_config, str):
+                import json
+                try:
+                    mm_config_kwargs["mm_pruning_config"] = json.loads(mm_pruning_config)
+                except json.JSONDecodeError as e:
+                    raise ValueError(f"Invalid JSON for mm_pruning_config: {e}")
 
             mm_config_kwargs = {
                 k: v for k, v in mm_config_kwargs.items() if v is not None

@@ -172,6 +172,10 @@ class MultiModalConfig:
     Value sits in range [0;1) and determines fraction of media tokens
     from each video to be pruned.
     """
+    mm_pruning_config: dict[str, Any] | None = Field(default=None)
+    """Dictionary containing configuration for multimodal pruning.
+    For example: {"strategy": "spatial_random", "spatial_pruning_rate": 0.5}
+    """
 
     @field_validator("limit_per_prompt", mode="before")
     @classmethod
@@ -278,4 +282,4 @@ class MultiModalConfig:
         return kwargs | dict(inference_kwargs)
 
     def is_multimodal_pruning_enabled(self):
-        return self.video_pruning_rate is not None and self.video_pruning_rate > 0
+        return (self.video_pruning_rate is not None and self.video_pruning_rate > 0) or self.mm_pruning_config is not None

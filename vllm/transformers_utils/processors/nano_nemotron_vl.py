@@ -22,7 +22,7 @@ from PIL import Image
 from transformers import BatchFeature, PretrainedConfig, TensorType
 
 from vllm.model_executor.models.parakeet import ParakeetExtractor
-from vllm.multimodal.evs import compute_retained_tokens_count
+from vllm.multimodal.token_pruning import get_pruning_strategy
 from vllm.multimodal.inputs import AudioItem
 from vllm.multimodal.processing.processor import PromptUpdateDetails, _seq2tokens
 from vllm.tokenizers import TokenizerLike
@@ -805,10 +805,10 @@ class NanoNemotronVLProcessor(BaseNanoNemotronVLProcessor):
 
             if self.video_pruning_rate is not None and self.video_pruning_rate > 0.0:
                 # Start of EVS-specific code
-                num_tokens = compute_retained_tokens_count(
+                strategy = get_pruning_strategy(None, self.video_pruning_rate)
+                num_tokens = strategy.get_retained_token_count(
                     tokens_per_frame=tokens_in_single_frame,
                     num_frames=num_frames,
-                    q=self.video_pruning_rate,
                 )
 
                 # Here we just need placeholders that won't actually be replaced -

@@ -498,6 +498,7 @@ class EngineArgs:
     io_processor_plugin: str | None = None
     skip_mm_profiling: bool = MultiModalConfig.skip_mm_profiling
     video_pruning_rate: float | None = MultiModalConfig.video_pruning_rate
+    mm_pruning_config: str | None = None
     # LoRA fields
     enable_lora: bool = False
     max_loras: int = LoRAConfig.max_loras
@@ -1083,6 +1084,15 @@ class EngineArgs:
             "--video-pruning-rate", **multimodal_kwargs["video_pruning_rate"]
         )
 
+        multimodal_group.add_argument(
+            "--mm-pruning-config",
+            type=str,
+            default=None,
+            help="JSON string containing configuration for multimodal pruning. "
+                 "For example: '{\"strategy\": \"spatial_random\", "
+                 "\"spatial_pruning_rate\": 0.5}'",
+        )
+
         # LoRA related configs
         lora_kwargs = get_kwargs(LoRAConfig)
         lora_group = parser.add_argument_group(
@@ -1408,6 +1418,7 @@ class EngineArgs:
             override_attention_dtype=self.override_attention_dtype,
             logits_processors=self.logits_processors,
             video_pruning_rate=self.video_pruning_rate,
+            mm_pruning_config=self.mm_pruning_config,
             io_processor_plugin=self.io_processor_plugin,
         )
 

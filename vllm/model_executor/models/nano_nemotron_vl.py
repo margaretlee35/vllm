@@ -40,10 +40,7 @@ from vllm.model_executor.models.utils import (
     maybe_prefix,
 )
 from vllm.multimodal import MULTIMODAL_REGISTRY
-from vllm.multimodal.evs import (
-    compute_retained_tokens_count,
-    compute_retention_mask,
-)
+from vllm.multimodal.token_pruning import get_pruning_strategy
 from vllm.multimodal.inputs import (
     AudioItem,
     MultiModalDataDict,
@@ -588,12 +585,13 @@ class NanoNemotronVLMultiModalProcessor(
                 assert isinstance(num_patches, int)
 
             video_pruning_rate = self.info.ctx.get_mm_config().video_pruning_rate
-            if video_pruning_rate is not None and video_pruning_rate > 0.0:
+            mm_pruning_config = self.info.ctx.get_mm_config().mm_pruning_config
+            if (video_pruning_rate is not None and video_pruning_rate > 0.0) or mm_pruning_config is not None:
                 # Start of EVS-specific code
-                num_tokens = compute_retained_tokens_count(
+                strategy = get_pruning_strategy(mm_pruning_config, video_pruning_rate)
+                num_tokens = strategy.get_retained_token_count(
                     tokens_per_frame=feature_size,
                     num_frames=num_patches,
-                    q=video_pruning_rate,
                 )
                 # Here we just need placeholders that won't actually be replaced -
                 # we just need to make sure the total number of tokens is correct
@@ -1056,13 +1054,15 @@ class NemotronH_Nano_VL_V2(
             frame_duration_ms = video_input["frame_duration_ms"][i].item()
             assert single_video_embeddings.shape[0] % num_frames == 0
 
-            if video_pruning_rate is not None and video_pruning_rate > 0.0:
+            mm_pruning_config = self.multimodal_config.mm_pruning_config if hasattr(self, 'multimodal_config') else None
+
+            if (video_pruning_rate is not None and video_pruning_rate > 0.0) or mm_pruning_config is not None:
                 # Start of EVS-specific code
-                retention_mask = compute_retention_mask(
+                strategy = get_pruning_strategy(mm_pruning_config, video_pruning_rate)
+                retention_mask = strategy.get_retention_mask(
                     single_video_embeddings,
                     video_size_thw=(num_frames, rows, cols),
                     spatial_merge_size=1,
-                    q=video_pruning_rate,
                 )
 
                 # apply retention mask
