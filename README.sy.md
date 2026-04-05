@@ -47,14 +47,14 @@ Quick smoke run:
 cd examples/online_serving/disaggregated_encoder
 TIMEOUT_SECONDS=120 NUM_PROMPTS=1 \
 GPU_E=0 GPU_PD=1 \
-uv run bash ./lovelace/disagg_1e1pd_example.sh
+uv run bash ./epdtest/run.sh
 ```
 
 ```bash
 cd examples/online_serving/disaggregated_encoder
 TIMEOUT_SECONDS=120 NUM_PROMPTS=1 \
 GPU_E=0 GPU_P=0 GPU_D=1 \
-uv run --extra bench ./lovelace/disagg_1e1p1d_example.sh
+uv run --extra bench ./epdtest/run.sh --topology 1e1p1d
 ```
 
 Run 1E1PD:
@@ -63,7 +63,7 @@ Run 1E1PD:
 cd examples/online_serving/disaggregated_encoder
 TIMEOUT_SECONDS=120 NUM_PROMPTS=1000 \
 GPU_E=0 GPU_PD=1 \
-uv run --extra bench bash ./lovelace/disagg_1e1pd_example.sh
+uv run --extra bench bash ./epdtest/run.sh
 ```
 
 Run 1E1P1D (requires NIXL):
@@ -72,8 +72,8 @@ Run 1E1P1D (requires NIXL):
 cd examples/online_serving/disaggregated_encoder
 TIMEOUT_SECONDS=120 NUM_PROMPTS=1000 \
 GPU_E=0 GPU_P=0 GPU_D=1 \
-uv run --extra bench ./lovelace/disagg_1e1p1d_example.sh
+uv run --extra bench ./epdtest/run.sh --topology 1e1p1d
 ```
 
 Note:
-lovelace is the server name. Change it to lonestar or etc.
+`epdtest` is just the local test directory name. Change env settings as needed for a specific server.

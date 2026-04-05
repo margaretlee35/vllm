@@ -3,11 +3,8 @@ set -euo pipefail
 
 declare -a PIDS=()
 
-###############################################################################
-# Configuration -- override via env before running
-###############################################################################
 MODEL="${MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}"
-LOG_PATH="${LOG_PATH:-./lovelace/logs}"
+LOG_PATH="${LOG_PATH:-./epdtest/logs}"
 mkdir -p "$LOG_PATH"
 
 ENCODE_PORT="${ENCODE_PORT:-19534}"
@@ -20,14 +17,12 @@ GPU_P="${GPU_P:-2}"
 GPU_D="${GPU_D:-3}"
 
 EC_SHARED_STORAGE_PATH="${EC_SHARED_STORAGE_PATH:-/tmp/ec_cache}"
-TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-12000}"   # wait_for_server timeout
+TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-12000}"
 
-NUM_PROMPTS="${NUM_PROMPTS:-500}"    # number of prompts to send in benchmark
+NUM_PROMPTS="${NUM_PROMPTS:-500}"
 PD_MAX_MODEL_LEN="${PD_MAX_MODEL_LEN:-65536}"
 PD_MAX_NUM_BATCHED_TOKENS="${PD_MAX_NUM_BATCHED_TOKENS:-32768}"
 PD_MAX_NUM_SEQS="${PD_MAX_NUM_SEQS:-64}"
-BENCH_REQUEST_RATE="${BENCH_REQUEST_RATE:-64}"
-BENCH_MAX_CONCURRENCY="${BENCH_MAX_CONCURRENCY:-64}"
 NIXL_BASE_PORT="${NIXL_BASE_PORT:-$((5200 + ($$ % 1000)))}"
 PREFILL_NIXL_SIDE_CHANNEL_PORT="${PREFILL_NIXL_SIDE_CHANNEL_PORT:-$NIXL_BASE_PORT}"
 DECODE_NIXL_SIDE_CHANNEL_PORT="${DECODE_NIXL_SIDE_CHANNEL_PORT:-$((NIXL_BASE_PORT + 1000))}"
@@ -43,10 +38,6 @@ export UCX_NET_DEVICES=all
 
 ulimit -n "${ULIMIT_NOFILE:-65535}" >/dev/null 2>&1 || true
 
-###############################################################################
-# Helpers
-###############################################################################
-# Find the git repository root directory
 GIT_ROOT=$(git rev-parse --show-toplevel)
 
 START_TIME=$(date +"%Y%m%d_%H%M%S")
@@ -68,51 +59,18 @@ port_in_use() {
     ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]${port}$"
 }
 
-# Cleanup function
 cleanup() {
     local rc=$?
     set +e
-    echo "Stopping everything…"
-    trap - EXIT INT TERM USR1   # prevent re-entrancy
-
-    # Kill all tracked PIDs
+    trap - EXIT INT TERM USR1
     for pid in "${PIDS[@]}"; do
-        if kill -0 "$pid" 2>/dev/null; then
-            echo "Killing process $pid"
-            kill "$pid" 2>/dev/null
-        fi
+        kill "$pid" 2>/dev/null || true
     done
-
-    # Kill any EngineCore orphaned from this run (e.g., APIServer died first).
-    for pid in $(grep -hEo 'EngineCore pid=[0-9]+' "$ENC_LOG" "$P_LOG" "$D_LOG" 2>/dev/null | awk -F= '{print $2}' | sort -u); do
-        if kill -0 "$pid" 2>/dev/null; then
-            echo "Killing orphan EngineCore $pid"
-            kill "$pid" 2>/dev/null
-        fi
-    done
-
-    # Wait a moment for graceful shutdown
     sleep 2
-
-    # Force kill any remaining processes
     for pid in "${PIDS[@]}"; do
-        if kill -0 "$pid" 2>/dev/null; then
-            echo "Force killing process $pid"
-            kill -9 "$pid" 2>/dev/null
-        fi
+        kill -9 "$pid" 2>/dev/null || true
     done
-
-    for pid in $(grep -hEo 'EngineCore pid=[0-9]+' "$ENC_LOG" "$P_LOG" "$D_LOG" 2>/dev/null | awk -F= '{print $2}' | sort -u); do
-        if kill -0 "$pid" 2>/dev/null; then
-            echo "Force killing orphan EngineCore $pid"
-            kill -9 "$pid" 2>/dev/null
-        fi
-    done
-
-    # Kill the entire process group as backup
     kill -- -$$ 2>/dev/null
-
-    echo "All processes stopped."
     exit "$rc"
 }
 
@@ -121,16 +79,8 @@ trap cleanup INT
 trap cleanup USR1
 trap cleanup TERM
 
-# clear previous cache
-echo "remove previous ec cache folder"
 rm -rf "$EC_SHARED_STORAGE_PATH"
-
-echo "make ec cache folder"
 mkdir -p "$EC_SHARED_STORAGE_PATH"
-
-echo "VISION_ZIP_RATE='${VISION_ZIP_RATE:-}'"
-echo "VISION_ZIP_DOMINANT_RATIO='${VISION_ZIP_DOMINANT_RATIO:-}'"
-echo "VISION_ZIP_ATTENTION_LAYER='${VISION_ZIP_ATTENTION_LAYER:-}'"
 
 declare -a VISION_ZIP_ARGS=(--vision-zip-debug)
 if [[ -n "${VISION_ZIP_RATE:-}" ]]; then
@@ -143,17 +93,11 @@ if [[ -n "${VISION_ZIP_ATTENTION_LAYER:-}" ]]; then
     VISION_ZIP_ARGS+=(--vision-zip-attention-layer "$VISION_ZIP_ATTENTION_LAYER")
 fi
 
-printf 'VISION_ZIP_ARGS: %q\n' "${VISION_ZIP_ARGS[@]}"
-
-while port_in_use "$PREFILL_NIXL_SIDE_CHANNEL_PORT" || \
-      port_in_use "$DECODE_NIXL_SIDE_CHANNEL_PORT"; do
+while port_in_use "$PREFILL_NIXL_SIDE_CHANNEL_PORT" || port_in_use "$DECODE_NIXL_SIDE_CHANNEL_PORT"; do
     PREFILL_NIXL_SIDE_CHANNEL_PORT=$((PREFILL_NIXL_SIDE_CHANNEL_PORT + 1))
     DECODE_NIXL_SIDE_CHANNEL_PORT=$((DECODE_NIXL_SIDE_CHANNEL_PORT + 1))
 done
 
-###############################################################################
-# Encoder worker
-###############################################################################
 CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
     --gpu-memory-utilization 0.05 \
     --port "$ENCODE_PORT" \
@@ -172,15 +116,9 @@ CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
     }' \
     "${VISION_ZIP_ARGS[@]}" \
     >"${ENC_LOG}" 2>&1 &
-
 PIDS+=($!)
 
-###############################################################################
-# Prefill worker
-###############################################################################
-CUDA_VISIBLE_DEVICES="$GPU_P" \
-UCX_NET_DEVICES=all \
-VLLM_NIXL_SIDE_CHANNEL_PORT="$PREFILL_NIXL_SIDE_CHANNEL_PORT" \
+CUDA_VISIBLE_DEVICES="$GPU_P" UCX_NET_DEVICES=all VLLM_NIXL_SIDE_CHANNEL_PORT="$PREFILL_NIXL_SIDE_CHANNEL_PORT" \
 vllm serve "$MODEL" \
     --gpu-memory-utilization "$PREFILL_GPU_MEMORY_UTILIZATION" \
     --port "$PREFILL_PORT" \
@@ -203,15 +141,9 @@ vllm serve "$MODEL" \
     }' \
     "${VISION_ZIP_ARGS[@]}" \
     >"${P_LOG}" 2>&1 &
-
 PIDS+=($!)
 
-###############################################################################
-# Decode worker
-###############################################################################
-CUDA_VISIBLE_DEVICES="$GPU_D" \
-UCX_NET_DEVICES=all \
-VLLM_NIXL_SIDE_CHANNEL_PORT="$DECODE_NIXL_SIDE_CHANNEL_PORT" \
+CUDA_VISIBLE_DEVICES="$GPU_D" UCX_NET_DEVICES=all VLLM_NIXL_SIDE_CHANNEL_PORT="$DECODE_NIXL_SIDE_CHANNEL_PORT" \
 vllm serve "$MODEL" \
     --gpu-memory-utilization "$DECODE_GPU_MEMORY_UTILIZATION" \
     --port "$DECODE_PORT" \
@@ -227,35 +159,24 @@ vllm serve "$MODEL" \
     }' \
     "${VISION_ZIP_ARGS[@]}" \
     >"${D_LOG}" 2>&1 &
-
 PIDS+=($!)
 
-# Wait for workers
 wait_for_server "$ENCODE_PORT"
 wait_for_server "$PREFILL_PORT"
 wait_for_server "$DECODE_PORT"
 
-###############################################################################
-# Proxy
-###############################################################################
-python disagg_epd_proxy.py \
+python "${GIT_ROOT}/examples/online_serving/disaggregated_encoder/disagg_epd_proxy.py" \
     --host "0.0.0.0" \
     --port "$PROXY_PORT" \
     --encode-servers-urls "http://localhost:$ENCODE_PORT" \
     --prefill-servers-urls "http://localhost:$PREFILL_PORT" \
     --decode-servers-urls "http://localhost:$DECODE_PORT" \
     >"${PROXY_LOG}" 2>&1 &
-
 PIDS+=($!)
 
 wait_for_server "$PROXY_PORT"
-echo "All services are up!"
 
-###############################################################################
-# KV cache monitoring (time series)
-###############################################################################
 KV_LOG=$LOG_PATH/kv_${START_TIME}.log
-
 (
   while true; do
     ts=$(date +%s)
@@ -268,24 +189,16 @@ KV_LOG=$LOG_PATH/kv_${START_TIME}.log
 ) &
 PIDS+=($!)
 
-###############################################################################
-# Benchmark
-###############################################################################
-echo "Running benchmark (stream)..."
 vllm bench serve \
-  --model               "$MODEL" \
-  --backend             openai-chat \
-  --endpoint            /v1/chat/completions \
-  --dataset-name        random-mm \
-  --seed                0 \
-  --num-prompts         "$NUM_PROMPTS" \
-  --random-mm-base-items-per-request "${IMAGES_PER_REQ:-1}" \
-  --random-mm-num-mm-items-range-ratio 0 \
-  --random-mm-limit-mm-per-prompt "{\"image\": ${IMAGES_PER_REQ:-1}, \"video\": 0}" \
-  --port                "$PROXY_PORT"
+    --model "$MODEL" \
+    --backend openai-chat \
+    --endpoint /v1/chat/completions \
+    --dataset-name random-mm \
+    --seed 0 \
+    --num-prompts "$NUM_PROMPTS" \
+    --random-mm-base-items-per-request "${IMAGES_PER_REQ:-1}" \
+    --random-mm-num-mm-items-range-ratio 0 \
+    --random-mm-limit-mm-per-prompt "{\"image\": ${IMAGES_PER_REQ:-1}, \"video\": 0}" \
+    --port "$PROXY_PORT"
 
-PIDS+=($!)
-
-# cleanup
-echo "cleanup..."
 cleanup

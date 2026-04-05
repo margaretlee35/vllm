@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-UTIL_DIR="/home/margaretlee35/work/vllm/lovelace/logs/utilization"
+UTIL_DIR="/home/margaretlee35/work/vllm/epdtest/logs/utilization"
 PLOT_SCRIPT="${UTIL_DIR}/plot_gpu_utilization.py"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 

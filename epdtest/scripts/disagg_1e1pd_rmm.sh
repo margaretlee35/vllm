@@ -3,11 +3,8 @@ set -euo pipefail
 
 declare -a PIDS=()
 
-###############################################################################
-# Configuration -- override via env before running
-###############################################################################
 MODEL="${MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}"
-LOG_PATH="${LOG_PATH:-./lovelace/logs}"
+LOG_PATH="${LOG_PATH:-./epdtest/logs}"
 mkdir -p "$LOG_PATH"
 
 ENCODE_PORT="${ENCODE_PORT:-19534}"
@@ -18,9 +15,9 @@ GPU_E="${GPU_E:-0}"
 GPU_PD="${GPU_PD:-1}"
 
 EC_SHARED_STORAGE_PATH="${EC_SHARED_STORAGE_PATH:-/tmp/ec_cache}"
-TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-12000}"   # wait_for_server timeout
+TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-12000}"
 
-NUM_PROMPTS="${NUM_PROMPTS:-500}"    # number of prompts to send in benchmark
+NUM_PROMPTS="${NUM_PROMPTS:-500}"
 PD_GPU_MEMORY_UTILIZATION="${PD_GPU_MEMORY_UTILIZATION:-0.85}"
 PD_MAX_MODEL_LEN="${PD_MAX_MODEL_LEN:-65536}"
 PD_MAX_NUM_BATCHED_TOKENS="${PD_MAX_NUM_BATCHED_TOKENS:-32768}"
@@ -32,17 +29,13 @@ VISION_ZIP_DOMINANT_RATIO="${VISION_ZIP_DOMINANT_RATIO:-}"
 VISION_ZIP_ATTENTION_LAYER="${VISION_ZIP_ATTENTION_LAYER:-}"
 IMAGES_PER_REQ="${IMAGES_PER_REQ:-1}"
 METRICS_SAMPLING_INTERVAL_SECONDS="${METRICS_SAMPLING_INTERVAL_SECONDS:-1}"
-GPU_PROFILER="${GPU_PROFILER:-none}"   # none | nsys | ncu
+GPU_PROFILER="${GPU_PROFILER:-none}"
 NSYS_ENABLE_GPU_METRICS="${NSYS_ENABLE_GPU_METRICS:-1}"
 NSYS_GPU_METRICS_DEVICES="${NSYS_GPU_METRICS_DEVICES:-$GPU_E,$GPU_PD}"
 NSYS_GPU_METRICS_FREQUENCY="${NSYS_GPU_METRICS_FREQUENCY:-1000}"
 
 ulimit -n "${ULIMIT_NOFILE:-65535}" >/dev/null 2>&1 || true
 
-###############################################################################
-# Helpers
-###############################################################################
-# Find the git repository root directory
 GIT_ROOT=$(git rev-parse --show-toplevel)
 
 START_TIME=$(date +"%Y%m%d_%H%M%S")
@@ -67,27 +60,22 @@ scrape_kv_cache_usage() {
         echo "NA"
         return 0
     fi
-
     awk '$1 == "vllm:kv_cache_usage_perc" {print $NF; found=1; exit} END {if (!found) print "NA"}' <<< "$response"
 }
 
 log_gpu_sm_utilization() {
     local ts=$1
     local output
-
     if ! command -v nvidia-smi >/dev/null 2>&1; then
         return 0
     fi
-
     output=$(nvidia-smi \
         --query-gpu=index,utilization.gpu,utilization.memory,memory.used,power.draw \
         --format=csv,noheader,nounits \
         -i "$GPU_E,$GPU_PD" 2>/dev/null || true)
-
     if [[ -z "$output" ]]; then
         return 0
     fi
-
     while IFS=',' read -r gpu_index sm_util mem_util mem_used power_draw; do
         gpu_index=$(echo "$gpu_index" | xargs)
         sm_util=$(echo "$sm_util" | xargs)
@@ -169,51 +157,18 @@ start_worker() {
     PIDS+=($!)
 }
 
-# Cleanup function
 cleanup() {
     local rc=$?
     set +e
-    echo "Stopping everything…"
-    trap - EXIT INT TERM USR1   # prevent re-entrancy
-    
-    # Kill all tracked PIDs
+    trap - EXIT INT TERM USR1
     for pid in "${PIDS[@]}"; do
-        if kill -0 "$pid" 2>/dev/null; then
-            echo "Killing process $pid"
-            kill "$pid" 2>/dev/null
-        fi
+        kill "$pid" 2>/dev/null || true
     done
-
-    # Kill any EngineCore orphaned from this run (e.g., APIServer died first).
-    for pid in $(grep -hEo 'EngineCore pid=[0-9]+' "$ENC_LOG" "$PD_LOG" 2>/dev/null | awk -F= '{print $2}' | sort -u); do
-        if kill -0 "$pid" 2>/dev/null; then
-            echo "Killing orphan EngineCore $pid"
-            kill "$pid" 2>/dev/null
-        fi
-    done
-    
-    # Wait a moment for graceful shutdown
     sleep 2
-    
-    # Force kill any remaining processes
     for pid in "${PIDS[@]}"; do
-        if kill -0 "$pid" 2>/dev/null; then
-            echo "Force killing process $pid"
-            kill -9 "$pid" 2>/dev/null
-        fi
+        kill -9 "$pid" 2>/dev/null || true
     done
-
-    for pid in $(grep -hEo 'EngineCore pid=[0-9]+' "$ENC_LOG" "$PD_LOG" 2>/dev/null | awk -F= '{print $2}' | sort -u); do
-        if kill -0 "$pid" 2>/dev/null; then
-            echo "Force killing orphan EngineCore $pid"
-            kill -9 "$pid" 2>/dev/null
-        fi
-    done
-    
-    # Kill the entire process group as backup
     kill -- -$$ 2>/dev/null
-    
-    echo "All processes stopped."
     exit "$rc"
 }
 
@@ -224,18 +179,10 @@ trap cleanup TERM
 
 validate_profiler
 
-# clear previous cache
-echo "remove previous ec cache folder"
 rm -rf "$EC_SHARED_STORAGE_PATH"
-
-echo "make ec cache folder"
 mkdir -p "$EC_SHARED_STORAGE_PATH"
 
-echo "VISION_ZIP_RATE='${VISION_ZIP_RATE:-}'"
-echo "VISION_ZIP_DOMINANT_RATIO='${VISION_ZIP_DOMINANT_RATIO:-}'"
-echo "VISION_ZIP_ATTENTION_LAYER='${VISION_ZIP_ATTENTION_LAYER:-}'"
-
-declare -a VISION_ZIP_ARGS=(--vision-zip-debug )
+declare -a VISION_ZIP_ARGS=(--vision-zip-debug)
 if [[ -n "${VISION_ZIP_RATE:-}" ]]; then
     VISION_ZIP_ARGS+=(--vision-zip-rate "$VISION_ZIP_RATE")
 fi
@@ -246,10 +193,6 @@ if [[ -n "${VISION_ZIP_ATTENTION_LAYER:-}" ]]; then
     VISION_ZIP_ARGS+=(--vision-zip-attention-layer "$VISION_ZIP_ATTENTION_LAYER")
 fi
 
-printf 'VISION_ZIP_ARGS: %q\n' "${VISION_ZIP_ARGS[@]}"
-###############################################################################
-# Encoder worker
-###############################################################################
 start_worker encoder "$ENC_LOG" "$GPU_E" \
     vllm serve "$MODEL" \
     --gpu-memory-utilization 0.05 \
@@ -267,12 +210,8 @@ start_worker encoder "$ENC_LOG" "$GPU_E" \
             "shared_storage_path": "'"$EC_SHARED_STORAGE_PATH"'"
         }
     }' \
-    "${VISION_ZIP_ARGS[@]}" \
-    
+    "${VISION_ZIP_ARGS[@]}"
 
-###############################################################################
-# Prefill+Decode worker
-###############################################################################
 start_worker prefill_decode "$PD_LOG" "$GPU_PD" \
     vllm serve "$MODEL" \
     --gpu-memory-utilization "$PD_GPU_MEMORY_UTILIZATION" \
@@ -290,34 +229,22 @@ start_worker prefill_decode "$PD_LOG" "$GPU_PD" \
             "shared_storage_path": "'"$EC_SHARED_STORAGE_PATH"'"
         }
     }' \
-    "${VISION_ZIP_ARGS[@]}" \
-    
+    "${VISION_ZIP_ARGS[@]}"
 
-# Wait for workers
 wait_for_server "$ENCODE_PORT"
-echo "wait for Encode port complete"
-
 wait_for_server "$PREFILL_DECODE_PORT"
-echo "wait for PD port complete"
-###############################################################################
-# Proxy
-###############################################################################
-python ${GIT_ROOT}/examples/online_serving/disaggregated_encoder/disagg_epd_proxy.py \
+
+python "${GIT_ROOT}/examples/online_serving/disaggregated_encoder/disagg_epd_proxy.py" \
     --host "0.0.0.0" \
     --port "$PROXY_PORT" \
     --encode-servers-urls "http://localhost:$ENCODE_PORT" \
     --prefill-servers-urls "disable" \
     --decode-servers-urls "http://localhost:$PREFILL_DECODE_PORT" \
     >"${PROXY_LOG}" 2>&1 &
-
 PIDS+=($!)
 
 wait_for_server "$PROXY_PORT"
-echo "All services are up!"
 
-###############################################################################
-# KV cache monitoring (time series)
-###############################################################################
 KV_LOG=$LOG_PATH/kv_${START_TIME}.log
 SM_LOG=$LOG_PATH/sm_${START_TIME}.log
 
@@ -336,24 +263,16 @@ echo "timestamp,role,gpu_index,sm_utilization_pct,memory_utilization_pct,memory_
 ) &
 PIDS+=($!)
 
-###############################################################################
-# Benchmark
-###############################################################################
-echo "Running benchmark (stream)..."
 vllm bench serve \
-  --model               "$MODEL" \
-  --backend             openai-chat \
-  --endpoint            /v1/chat/completions \
-  --dataset-name        random-mm \
-  --seed                0 \
-  --num-prompts         "$NUM_PROMPTS" \
-  --random-mm-base-items-per-request "${IMAGES_PER_REQ:-1}" \
-  --random-mm-num-mm-items-range-ratio 0 \
-  --random-mm-limit-mm-per-prompt "{\"image\": ${IMAGES_PER_REQ:-1}, \"video\": 0}" \
-  --port                "$PROXY_PORT"
+    --model "$MODEL" \
+    --backend openai-chat \
+    --endpoint /v1/chat/completions \
+    --dataset-name random-mm \
+    --seed 0 \
+    --num-prompts "$NUM_PROMPTS" \
+    --random-mm-base-items-per-request "${IMAGES_PER_REQ:-1}" \
+    --random-mm-num-mm-items-range-ratio 0 \
+    --random-mm-limit-mm-per-prompt "{\"image\": ${IMAGES_PER_REQ:-1}, \"video\": 0}" \
+    --port "$PROXY_PORT"
 
-PIDS+=($!)
-
-# cleanup
-echo "cleanup..."
 cleanup

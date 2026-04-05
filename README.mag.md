@@ -22,10 +22,20 @@ Optional (if you use a shared cache):
 ## Run example
 
 ```bash
-uv run bash examples/online_serving/disaggregated_encoder/disagg_1e1pd_example.sh
+uv run bash ./epdtest/run.sh
 ```
+
+Run the 1e1p1d topology instead:
+
+```bash
+uv run --extra bench bash ./epdtest/run.sh --topology 1e1p1d
+```
+
+Note:
+- `epdtest/` is the direct local EPD test entrypoint in this repo.
+- Legacy scripts under `examples/online_serving/disaggregated_encoder/lovelace/` are compatibility wrappers that route into `epdtest/run.sh`.
 
 ## Troubleshooting
 
-- If the encoder or PD worker fails, check `./logs`.
+- If the encoder or PD worker fails, check `./epdtest/logs`.
 - Example run output: `examples/online_serving/disaggregated_encoder/1e1pd.txt`
