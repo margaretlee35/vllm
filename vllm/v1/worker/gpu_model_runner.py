@@ -4594,10 +4594,14 @@ class GPUModelRunner(
             ):
                 prepare_communication_buffer_for_model(drafter_model)
         mm_config = self.model_config.multimodal_config
+        model = self.get_model()
         self.is_multimodal_pruning_enabled = (
-            supports_multimodal_pruning(self.get_model())
+            supports_multimodal_pruning(model)
             and mm_config is not None
-            and mm_config.is_multimodal_pruning_enabled()
+            and (
+                mm_config.is_multimodal_pruning_enabled()
+                or getattr(model, "is_vision_zip_recompute_enabled", False)
+            )
         )
 
         if (

@@ -1037,6 +1037,13 @@ _MULTIMODAL_EXAMPLE_MODELS = {
         "Qwen/Qwen2.5-VL-3B-Instruct",
         max_model_len=4096,
     ),
+    "Qwen2_5_VLVisionZipForConditionalGeneration": _HfExamplesInfo(
+        "Qwen/Qwen2.5-VL-3B-Instruct",
+        max_model_len=4096,
+        hf_overrides={
+            "architectures": ["Qwen2_5_VLVisionZipForConditionalGeneration"],
+        },
+    ),
     "Qwen2_5OmniModel": _HfExamplesInfo("Qwen/Qwen2.5-Omni-3B"),
     "Qwen2_5OmniForConditionalGeneration": _HfExamplesInfo("Qwen/Qwen2.5-Omni-7B-AWQ"),
     "Qwen3VLForConditionalGeneration": _HfExamplesInfo(
