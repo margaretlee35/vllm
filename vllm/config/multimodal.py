@@ -174,14 +174,14 @@ class MultiModalConfig:
     """
     vision_zip_rate: float | None = Field(default=None, ge=0.0, lt=1.0)
     """Sets the image-token pruning rate for VisionZip-style compression on
-    CLIP-backed LLaVA models. The value determines the fraction of selected
+    VisionZip-enabled multimodal models. The value determines the fraction of selected
     visual tokens pruned before they are projected into the language model."""
     vision_zip_dominant_ratio: float = Field(default=54.0 / 64.0, gt=0.0, le=1.0)
     """Fraction of kept VisionZip tokens reserved for dominant tokens chosen
-    from CLS attention. Remaining kept tokens are contextual tokens produced by
-    metric-based merging."""
+    from model-specific attention scores. Remaining kept tokens are contextual
+    tokens produced by metric-based merging."""
     vision_zip_attention_layer: int = -2
-    """Vision encoder layer index used to gather CLS attention and key states
+    """Vision encoder layer index used to gather token-importance metadata and key states
     for VisionZip compression. Negative values are relative to the full vision
     encoder depth."""
     vision_zip_debug: bool = False
