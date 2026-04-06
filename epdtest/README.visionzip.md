@@ -1,8 +1,8 @@
 # VisionZip vs NoPrune EPD Benchmark Results
 
 This file compares all 8 runs:
-- VisionZip batch: `20260406_020517` (`bash epdtest/vt_prune.sh visionzip`)
-- NoPrune batch: `20260406_021822` (`bash epdtest/vt_prune.sh noprune`)
+- VisionZip batch: `20260406_020517` (`bash epdtest/run_all.sh visionzip`)
+- NoPrune batch: `20260406_021822` (`bash epdtest/run_all.sh noprune`)
 - topology/profile: `1e1pd / metrics`
 - prompts per run: `500`
 - dataset mode: `random-mm`

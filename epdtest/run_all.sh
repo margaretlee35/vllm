@@ -1,12 +1,12 @@
-
+#!/bin/bash
 set -euo pipefail
 
 usage() {
     cat <<'EOF'
 Usage:
-  bash epdtest/vt_prune.sh visionzip
-  bash epdtest/vt_prune.sh cdprune
-  bash epdtest/vt_prune.sh noprune
+  bash epdtest/run_all.sh visionzip
+  bash epdtest/run_all.sh cdprune
+  bash epdtest/run_all.sh noprune
 
 Accepted method aliases:
   visionzip | vision_zip
@@ -32,7 +32,7 @@ case "$1" in
         ;;
     noprune|no_prune|none)
         PRUNE_MODE="noprune"
-        export VISUAL_TOKEN_PRUNING_METHOD="noprune"
+        export VISUAL_TOKEN_PRUNING_METHOD=""
         ;;
     -h|--help)
         usage
@@ -46,9 +46,8 @@ case "$1" in
 esac
 
 export REPO_ROOT="${REPO_ROOT:-.}"
-
 export TOPOLOGY="${TOPOLOGY:-1e1pd}"
-export PROFILE="${PROFILE:-metrics}"
+export PROFILE="${PROFILE:-randommm}"
 export MODEL="${MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}"
 
 export GPU_E="${GPU_E:-0}"
@@ -65,41 +64,23 @@ export VISION_ZIP_DOMINANT_RATIO="${VISION_ZIP_DOMINANT_RATIO:-0.75}"
 export VISION_ZIP_ATTENTION_LAYER="${VISION_ZIP_ATTENTION_LAYER:--2}"
 
 if [[ "$PRUNE_MODE" == "noprune" ]]; then
-    # Downstream scripts default pruning to vision_zip; keep this mode local by
-    # stripping all visual-token-pruning CLI args at the vllm call boundary.
     export VISUAL_TOKEN_PRUNING_RATE=""
     export VISION_ZIP_DOMINANT_RATIO=""
     export VISION_ZIP_ATTENTION_LAYER=""
-
-    vllm() {
-        local -a filtered_args=()
-        local skip_next=0
-        local arg
-        for arg in "$@"; do
-            if (( skip_next )); then
-                skip_next=0
-                continue
-            fi
-            case "$arg" in
-                --visual-token-pruning-method|--vt-prune-rate|--vision-zip-dominant-ratio|--vision-zip-attention-layer)
-                    skip_next=1
-                    continue
-                    ;;
-                --visual-token-pruning-method=*|--vt-prune-rate=*|--vision-zip-dominant-ratio=*|--vision-zip-attention-layer=*)
-                    continue
-                    ;;
-            esac
-            filtered_args+=("$arg")
-        done
-        command vllm "${filtered_args[@]}"
-    }
-    export -f vllm
 fi
 
 IMAGES_PER_REQ_LIST="${IMAGES_PER_REQ_LIST:-1 2 4 8}"
 RUN_STAMP=$(date +"%Y%m%d_%H%M%S")
-SLURM_LOG_DIR="${SLURM_LOG_DIR:-$REPO_ROOT/epdtest/slurm_logs}"
-mkdir -p "$LOG_PATH" "$SLURM_LOG_DIR"
+mkdir -p "$LOG_PATH"
+
+declare -a BASE_RUN_ARGS=(
+    --topology "$TOPOLOGY"
+    --profile "$PROFILE"
+)
+
+if [[ -n "${VISUAL_TOKEN_PRUNING_METHOD:-}" ]]; then
+    BASE_RUN_ARGS+=(--visual-token-pruning-method "$VISUAL_TOKEN_PRUNING_METHOD")
+fi
 
 echo "epdtest: topology=$TOPOLOGY profile=$PROFILE model=$MODEL"
 if [[ "$PRUNE_MODE" == "noprune" ]]; then
@@ -111,11 +92,13 @@ echo "epdtest: images_per_req=$IMAGES_PER_REQ_LIST"
 
 for images_per_req in $IMAGES_PER_REQ_LIST; do
     export IMAGES_PER_REQ="$images_per_req"
-    run_log="$SLURM_LOG_DIR/${TOPOLOGY}_${PROFILE}_ipr${images_per_req}_${RUN_STAMP}.log"
+    export RUN_STAMP
+    export RUN_DIR="${LOG_PATH}/${RUN_STAMP}/ipr${images_per_req}"
+    mkdir -p "$RUN_DIR"
 
-    echo "=== IMAGES_PER_REQ=$IMAGES_PER_REQ ===" | tee "$run_log"
+    echo "=== IMAGES_PER_REQ=$IMAGES_PER_REQ ==="
     bash ./epdtest/run.sh \
-        --topology "$TOPOLOGY" \
-        --profile "$PROFILE" \
-        2>&1 | tee -a "$run_log"
+        "${BASE_RUN_ARGS[@]}" \
+        --images-per-req "$IMAGES_PER_REQ" \
+        2>&1
 done

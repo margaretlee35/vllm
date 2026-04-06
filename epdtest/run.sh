@@ -10,7 +10,7 @@ TOPOLOGY="${TOPOLOGY:-1e1pd}"
 PROFILE="${PROFILE:-simple}"
 MODEL="${MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}"
 LOG_PATH="${LOG_PATH:-$GIT_ROOT/epdtest/logs}"
-IMAGES_PER_REQ_LIST="${IMAGES_PER_REQ_LIST:-1 2 4 8}"
+IMAGES_PER_REQ="${IMAGES_PER_REQ:-1}"
 INSTALL="${INSTALL:-1}"
 
 if [[ "${SKIP_INSTALL:-0}" == "1" ]]; then
@@ -25,7 +25,7 @@ Usage:
 Options:
   --topology 1e1pd|1e1p1d
   --profile simple|randommm
-  --images-per-req-list "1 2 4 8"
+  --images-per-req N
   --visual-token-pruning-method vision_zip|cdpruner
   --vision-zip-rate FLOAT
   --vision-zip-dominant-ratio FLOAT
@@ -37,7 +37,7 @@ Examples:
   bash epdtest/run.sh
   bash epdtest/run.sh --profile randommm
   bash epdtest/run.sh --topology 1e1p1d --profile randommm
-  bash epdtest/run.sh --profile randommm --images-per-req-list "1 2 4"
+  bash epdtest/run.sh --profile randommm --images-per-req 4
   bash epdtest/run.sh --visual-token-pruning-method vision_zip --vision-zip-rate 0.5
   bash epdtest/run.sh --skip-install
 
@@ -58,8 +58,8 @@ while [[ $# -gt 0 ]]; do
             PROFILE="$2"
             shift 2
             ;;
-        --images-per-req-list)
-            IMAGES_PER_REQ_LIST="$2"
+        --images-per-req)
+            IMAGES_PER_REQ="$2"
             shift 2
             ;;
         --visual-token-pruning-method)
@@ -133,7 +133,7 @@ if [[ -z "${TIMEOUT_SECONDS:-}" ]]; then
 fi
 
 if [[ "${VISUAL_TOKEN_PRUNING_METHOD:-}" == "vision_zip" ]]; then
-    if [[ -z "${VISION_ZIP_RATE:-}" ]]; then
+    if [[ -z "${VISION_ZIP_RATE:-}" && -z "${VISUAL_TOKEN_PRUNING_RATE:-}" ]]; then
         export VISION_ZIP_RATE=0.5
     fi
     if [[ -z "${VISION_ZIP_DOMINANT_RATIO:-}" ]]; then
@@ -196,59 +196,36 @@ case "${TOPOLOGY}:${PROFILE}" in
 esac
 
 RUN_STAMP="${RUN_STAMP:-$(date +"%Y%m%d_%H%M%S")}"
-
-run_once() {
-    local images_per_req="${1:-}"
-    local target_output_log
-
-    if [[ -n "$images_per_req" ]]; then
-        export IMAGES_PER_REQ="$images_per_req"
-        export RUN_DIR="${LOG_PATH}/${RUN_STAMP}/ipr${images_per_req}"
-    else
-        export RUN_DIR="${LOG_PATH}/${RUN_STAMP}"
-    fi
-
-    mkdir -p "$RUN_DIR"
-    target_output_log="$RUN_DIR/target_script.log"
-
-    echo "epdtest launcher"
-    echo "  topology       : $TOPOLOGY"
-    echo "  profile        : $PROFILE"
-    echo "  model          : $MODEL"
-    echo "  log_path       : ${LOG_PATH#$GIT_ROOT/}"
-    echo "  run_dir        : ${RUN_DIR#$GIT_ROOT/}"
-    if [[ -n "${VISUAL_TOKEN_PRUNING_METHOD:-}" ]]; then
-        echo "  vt_method      : $VISUAL_TOKEN_PRUNING_METHOD"
-    fi
-    if [[ "$PROFILE" == "randommm" ]]; then
-        echo "  image sweep    : $IMAGES_PER_REQ_LIST"
-    fi
-    if [[ -n "${IMAGES_PER_REQ:-}" ]]; then
-        echo "  images_per_req : $IMAGES_PER_REQ"
-    fi
-    if [[ -n "${VISION_ZIP_RATE:-}" ]]; then
-        echo "  vz_rate        : $VISION_ZIP_RATE"
-    fi
-    if [[ -n "${VISION_ZIP_DOMINANT_RATIO:-}" ]]; then
-        echo "  vz_dom_ratio   : $VISION_ZIP_DOMINANT_RATIO"
-    fi
-    if [[ -n "${VISION_ZIP_ATTENTION_LAYER:-}" ]]; then
-        echo "  vz_attn_layer  : $VISION_ZIP_ATTENTION_LAYER"
-    fi
-    echo "  script         : ${TARGET_SCRIPT#$GIT_ROOT/}"
-    echo "  target_output  : ${target_output_log#$GIT_ROOT/}"
-
-    bash "$TARGET_SCRIPT" 2>&1 | tee "$target_output_log"
-}
+RUN_DIR="${RUN_DIR:-${LOG_PATH}/${RUN_STAMP}}"
+mkdir -p "$RUN_DIR"
+TARGET_OUTPUT_LOG="$RUN_DIR/target_script.log"
 
 activate_venv
 cd "$GIT_ROOT"
 maybe_install
 
-if [[ "$PROFILE" == "randommm" ]]; then
-    for images_per_req in $IMAGES_PER_REQ_LIST; do
-        run_once "$images_per_req"
-    done
-else
-    run_once "${IMAGES_PER_REQ:-}"
+echo "epdtest launcher"
+echo "  topology       : $TOPOLOGY"
+echo "  profile        : $PROFILE"
+echo "  model          : $MODEL"
+echo "  log_path       : ${LOG_PATH#$GIT_ROOT/}"
+echo "  run_dir        : ${RUN_DIR#$GIT_ROOT/}"
+if [[ -n "${VISUAL_TOKEN_PRUNING_METHOD:-}" ]]; then
+    echo "  vt_method      : $VISUAL_TOKEN_PRUNING_METHOD"
 fi
+if [[ "$PROFILE" == "randommm" ]]; then
+    echo "  images_per_req : $IMAGES_PER_REQ"
+fi
+if [[ -n "${VISION_ZIP_RATE:-}" ]]; then
+    echo "  vz_rate        : $VISION_ZIP_RATE"
+fi
+if [[ -n "${VISION_ZIP_DOMINANT_RATIO:-}" ]]; then
+    echo "  vz_dom_ratio   : $VISION_ZIP_DOMINANT_RATIO"
+fi
+if [[ -n "${VISION_ZIP_ATTENTION_LAYER:-}" ]]; then
+    echo "  vz_attn_layer  : $VISION_ZIP_ATTENTION_LAYER"
+fi
+echo "  script         : ${TARGET_SCRIPT#$GIT_ROOT/}"
+echo "  target_output  : ${TARGET_OUTPUT_LOG#$GIT_ROOT/}"
+
+bash "$TARGET_SCRIPT" 2>&1 | tee "$TARGET_OUTPUT_LOG"

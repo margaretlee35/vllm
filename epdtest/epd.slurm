@@ -15,12 +15,8 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 cd "$REPO_ROOT"
 
-declare -a INSTALL_ARGS=()
-if [[ "${SKIP_INSTALL:-0}" != "1" ]]; then
-    INSTALL_ARGS+=(--install)
-fi
+export TOPOLOGY="${TOPOLOGY:-1e1pd}"
+export PROFILE="${PROFILE:-randommm}"
+export PRUNE_MODE="${PRUNE_MODE:-noprune}"
 
-bash ./epdtest/run.sh \
-    --topology "${TOPOLOGY:-1e1pd}" \
-    --profile "${PROFILE:-randommm}" \
-    "${INSTALL_ARGS[@]}"
+bash ./epdtest/run_all.sh "$PRUNE_MODE"
