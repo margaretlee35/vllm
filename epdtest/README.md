@@ -52,9 +52,12 @@ VisionZip and `randommm` sweep arguments are also available directly on the
 launcher:
 
 ```bash
-bash epdtest/run.sh --vision-zip-rate 0.5 --vision-zip-dominant-ratio 0.75 --vision-zip-attention-layer -2
+bash epdtest/run.sh --visual-token-pruning-method vision_zip --vision-zip-rate 0.5 --vision-zip-dominant-ratio 0.75 --vision-zip-attention-layer -2
 bash epdtest/run.sh --profile randommm --images-per-req-list "1 2 4 8"
 ```
+
+Visual token pruning is not enabled by default anymore. To turn it on, pass an
+explicit pruning method such as `--visual-token-pruning-method vision_zip`.
 
 ## Slurm
 
@@ -112,6 +115,7 @@ The main variables to override are now consumed by `run.sh`:
 - `LOG_PATH`: output directory for launcher-owned logs
 - `IMAGES_PER_REQ_LIST`: space-separated sweep values for `randommm`
 - `SKIP_INSTALL`: set to `1` to skip the default install
+- `VISUAL_TOKEN_PRUNING_METHOD`: optional explicit pruning method
 - `GPU_E`, `GPU_PD`, `GPU_P`, `GPU_D`: GPU assignment
 - `NUM_PROMPTS`: benchmark request count
 - `VISION_ZIP_RATE`, `VISION_ZIP_DOMINANT_RATIO`, `VISION_ZIP_ATTENTION_LAYER`: VisionZip tuning

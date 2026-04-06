@@ -26,6 +26,7 @@ Options:
   --topology 1e1pd|1e1p1d
   --profile simple|randommm
   --images-per-req-list "1 2 4 8"
+  --visual-token-pruning-method vision_zip|cdpruner
   --vision-zip-rate FLOAT
   --vision-zip-dominant-ratio FLOAT
   --vision-zip-attention-layer INT
@@ -37,7 +38,7 @@ Examples:
   bash epdtest/run.sh --profile randommm
   bash epdtest/run.sh --topology 1e1p1d --profile randommm
   bash epdtest/run.sh --profile randommm --images-per-req-list "1 2 4"
-  bash epdtest/run.sh --vision-zip-rate 0.5 --vision-zip-dominant-ratio 0.75
+  bash epdtest/run.sh --visual-token-pruning-method vision_zip --vision-zip-rate 0.5
   bash epdtest/run.sh --skip-install
 
 Notes:
@@ -59,6 +60,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --images-per-req-list)
             IMAGES_PER_REQ_LIST="$2"
+            shift 2
+            ;;
+        --visual-token-pruning-method)
+            export VISUAL_TOKEN_PRUNING_METHOD="$2"
             shift 2
             ;;
         --vision-zip-rate)
@@ -127,16 +132,16 @@ if [[ -z "${TIMEOUT_SECONDS:-}" ]]; then
     export TIMEOUT_SECONDS=120
 fi
 
-if [[ -z "${VISION_ZIP_RATE:-}" ]]; then
-    export VISION_ZIP_RATE=0.5
-fi
-
-if [[ -z "${VISION_ZIP_DOMINANT_RATIO:-}" ]]; then
-    export VISION_ZIP_DOMINANT_RATIO=0.75
-fi
-
-if [[ -z "${VISION_ZIP_ATTENTION_LAYER:-}" ]]; then
-    export VISION_ZIP_ATTENTION_LAYER=-2
+if [[ "${VISUAL_TOKEN_PRUNING_METHOD:-}" == "vision_zip" ]]; then
+    if [[ -z "${VISION_ZIP_RATE:-}" ]]; then
+        export VISION_ZIP_RATE=0.5
+    fi
+    if [[ -z "${VISION_ZIP_DOMINANT_RATIO:-}" ]]; then
+        export VISION_ZIP_DOMINANT_RATIO=0.75
+    fi
+    if [[ -z "${VISION_ZIP_ATTENTION_LAYER:-}" ]]; then
+        export VISION_ZIP_ATTENTION_LAYER=-2
+    fi
 fi
 
 export TOPOLOGY
@@ -212,6 +217,9 @@ run_once() {
     echo "  model          : $MODEL"
     echo "  log_path       : ${LOG_PATH#$GIT_ROOT/}"
     echo "  run_dir        : ${RUN_DIR#$GIT_ROOT/}"
+    if [[ -n "${VISUAL_TOKEN_PRUNING_METHOD:-}" ]]; then
+        echo "  vt_method      : $VISUAL_TOKEN_PRUNING_METHOD"
+    fi
     if [[ "$PROFILE" == "randommm" ]]; then
         echo "  image sweep    : $IMAGES_PER_REQ_LIST"
     fi
