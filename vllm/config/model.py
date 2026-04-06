@@ -511,6 +511,20 @@ class ModelConfig:
         self.hf_image_processor_config = get_hf_image_processor_config(
             self.model, hf_token=self.hf_token, revision=self.revision
         )
+
+        # When visual-token pruning is explicitly requested for Qwen2.5-VL,
+        # route to the prune wrapper architecture without requiring
+        # manual --hf-overrides in launch scripts.
+        if visual_token_pruning_method is not None:
+            architectures = getattr(self.hf_config, "architectures", None)
+            if architectures is not None and "Qwen2_5_VLForConditionalGeneration" in architectures:
+                self.hf_config.architectures = [
+                    "Qwen2_5_VLPruneForConditionalGeneration"
+                    if arch == "Qwen2_5_VLForConditionalGeneration"
+                    else arch
+                    for arch in architectures
+                ]
+
         self.model_arch_config = self.get_model_arch_config()
 
         architectures = self.architectures
@@ -634,6 +648,18 @@ class ModelConfig:
             }
 
             self.multimodal_config = MultiModalConfig(**mm_config_kwargs)
+
+        if (
+            self.multimodal_config is not None
+            and self.multimodal_config.get_visual_token_pruning_method() is not None
+            and self.generation_config == "auto"
+        ):
+            # Qwen2.5-VL generation_config may set near-greedy temperature
+            # (e.g., 1e-06), which can produce empty completions on synthetic
+            # benchmark prompts and collapse TTFT/TPOT metrics to zero.
+            # For pruning benchmarks, prefer neutral vLLM defaults.
+            self.generation_config = "vllm"
+            self.override_generation_config.setdefault("min_new_tokens", 1)
 
         # Multimodal GGUF models must use original repo for mm processing
         if is_gguf(self.tokenizer) and self.is_multimodal_model:
@@ -1373,6 +1399,7 @@ class ModelConfig:
             "top_p",
             "min_p",
             "max_new_tokens",
+            "min_new_tokens",
         ]
         if any(p in config for p in available_params):
             diff_sampling_param = {
@@ -1383,6 +1410,10 @@ class ModelConfig:
             if "max_new_tokens" in diff_sampling_param:
                 diff_sampling_param["max_tokens"] = diff_sampling_param.pop(
                     "max_new_tokens"
+                )
+            if "min_new_tokens" in diff_sampling_param:
+                diff_sampling_param["min_tokens"] = diff_sampling_param.pop(
+                    "min_new_tokens"
                 )
         else:
             diff_sampling_param = {}

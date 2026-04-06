@@ -20,6 +20,8 @@ EC_SHARED_STORAGE_PATH="${EC_SHARED_STORAGE_PATH:-/tmp/ec_cache}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-12000}"
 
 NUM_PROMPTS="${NUM_PROMPTS:-500}"
+BENCH_REQUEST_RATE="${BENCH_REQUEST_RATE:-32}"
+BENCH_MAX_CONCURRENCY="${BENCH_MAX_CONCURRENCY:-32}"
 PD_MAX_MODEL_LEN="${PD_MAX_MODEL_LEN:-65536}"
 PD_MAX_NUM_BATCHED_TOKENS="${PD_MAX_NUM_BATCHED_TOKENS:-32768}"
 PD_MAX_NUM_SEQS="${PD_MAX_NUM_SEQS:-32}"
@@ -200,6 +202,8 @@ vllm bench serve \
     --dataset-name random-mm \
     --seed 0 \
     --num-prompts "$NUM_PROMPTS" \
+    --request-rate "$BENCH_REQUEST_RATE" \
+    --max-concurrency "$BENCH_MAX_CONCURRENCY" \
     --random-mm-base-items-per-request "${IMAGES_PER_REQ:-1}" \
     --random-mm-num-mm-items-range-ratio 0 \
     --random-mm-limit-mm-per-prompt "{\"image\": ${IMAGES_PER_REQ:-1}, \"video\": 0}" \

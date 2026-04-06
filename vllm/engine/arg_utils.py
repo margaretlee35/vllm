@@ -1096,6 +1096,11 @@ class EngineArgs:
             "--vt-prune-rate", **multimodal_kwargs["vt_prune_rate"]
         )
         multimodal_group.add_argument(
+            "--visual-token-pruning-rate",
+            dest="vt_prune_rate",
+            **multimodal_kwargs["vt_prune_rate"],
+        )
+        multimodal_group.add_argument(
             "--vision-zip-dominant-ratio",
             **multimodal_kwargs["vision_zip_dominant_ratio"],
         )

@@ -248,6 +248,8 @@ class MultiModalConfig:
             return None
 
         method = value.strip().lower()
+        if method in ("", "none", "noprune", "no_prune"):
+            return None
         if method in ("vision_zip", "visionzip"):
             return "vision_zip"
         if method in ("cdpruner", "cdprune"):
@@ -258,8 +260,47 @@ class MultiModalConfig:
             "'vision_zip'/'visionzip' or 'cdpruner'/'cdprune'."
         )
 
+    @staticmethod
+    def _parse_visual_token_pruning_rate(
+        value: float | str | None,
+    ) -> float | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            value = value.strip()
+            if value == "":
+                return None
+
+        rate = float(value)
+        if not 0.0 <= rate < 1.0:
+            raise ValueError(
+                "VISUAL_TOKEN_PRUNING_RATE/'vt_prune_rate' must be within [0, 1)."
+            )
+        return rate
+
+    @field_validator("vt_prune_rate", mode="before")
+    @classmethod
+    def _validate_vt_prune_rate(
+        cls, value: float | str | None
+    ) -> float | None:
+        if value is None:
+            value = os.getenv("VISUAL_TOKEN_PRUNING_RATE")
+        return cls._parse_visual_token_pruning_rate(value)
+
     @model_validator(mode="after")
     def _validate_multimodal_config(self):
+        if self.visual_token_pruning_method is None:
+            self.visual_token_pruning_method = (
+                self._validate_visual_token_pruning_method(
+                    os.getenv("VISUAL_TOKEN_PRUNING_METHOD")
+                )
+            )
+
+        if self.vt_prune_rate is None:
+            self.vt_prune_rate = self._parse_visual_token_pruning_rate(
+                os.getenv("VISUAL_TOKEN_PRUNING_RATE")
+            )
+
         if self.mm_processor_cache_type != "shm" and (
             self.mm_shm_cache_max_object_size_mb
             != MultiModalConfig.mm_shm_cache_max_object_size_mb
@@ -268,12 +309,18 @@ class MultiModalConfig:
                 "'mm_shm_cache_max_object_size_mb' should only be set when "
                 "'mm_processor_cache_type' is 'shm'."
             )
-        if self.visual_token_pruning_method == "vision_zip" and not self.is_vision_zip_enabled():
+        if (
+            self.visual_token_pruning_method == "vision_zip"
+            and not self.is_vision_zip_enabled()
+        ):
             raise ValueError(
                 "'visual_token_pruning_method=\"vision_zip\"' requires "
                 "'vt_prune_rate' to be set to a value greater than 0."
             )
-        if self.visual_token_pruning_method == "cdpruner" and not self.is_cdpruner_enabled():
+        if (
+            self.visual_token_pruning_method == "cdpruner"
+            and not self.is_cdpruner_enabled()
+        ):
             raise ValueError(
                 "'visual_token_pruning_method=\"cdpruner\"' requires "
                 "'vt_prune_rate' to be set to a value greater than 0."

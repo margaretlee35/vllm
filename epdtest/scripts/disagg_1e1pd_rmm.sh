@@ -274,6 +274,8 @@ vllm bench serve \
     --dataset-name random-mm \
     --seed 0 \
     --num-prompts "$NUM_PROMPTS" \
+    --request-rate "$BENCH_REQUEST_RATE" \
+    --max-concurrency "$BENCH_MAX_CONCURRENCY" \
     --random-mm-base-items-per-request "${IMAGES_PER_REQ:-1}" \
     --random-mm-num-mm-items-range-ratio 0 \
     --random-mm-limit-mm-per-prompt "{\"image\": ${IMAGES_PER_REQ:-1}, \"video\": 0}" \

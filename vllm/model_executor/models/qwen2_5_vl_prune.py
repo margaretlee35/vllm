@@ -17,6 +17,7 @@ from functools import partial
 from typing import Any, Literal, Protocol, cast
 
 import einops
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -31,7 +32,11 @@ from vllm.multimodal.evs import (
     compute_mrope_for_media,
     compute_retained_tokens_count,
 )
-from vllm.multimodal.inputs import MultiModalFieldConfig, MultiModalKwargsItems
+from vllm.multimodal.inputs import (
+    MultiModalFeatureSpec,
+    MultiModalFieldConfig,
+    MultiModalKwargsItems,
+)
 from vllm.multimodal.parse import MultiModalDataItems
 from vllm.multimodal.processing import PromptReplacement, PromptUpdate
 
@@ -656,6 +661,89 @@ class Qwen2_5_VLPruneMultiModalProcessor(Qwen2_5_VLMultiModalProcessor):
 class Qwen2_5_VLPruneForConditionalGeneration(
     Qwen2_5_VLForConditionalGeneration
 ):
+    def get_mrope_input_positions(
+        self,
+        input_tokens: list[int],
+        mm_features: list[MultiModalFeatureSpec],
+    ) -> tuple[torch.Tensor, int]:
+        # Pruned wrappers must build base mRoPE with the effective placeholder
+        # lengths, not the original unpruned THW product; otherwise multi-image
+        # prompts can produce negative text spans and crash mRoPE init.
+        llm_pos_ids_list: list[np.ndarray] = []
+        st = 0
+
+        spatial_merge_size = self.config.vision_config.spatial_merge_size
+        tokens_per_second = getattr(
+            self.config.vision_config,
+            "tokens_per_second",
+            1.0,
+        )
+
+        for mm_feature in sorted(mm_features, key=lambda f: f.mm_position.offset):
+            offset = mm_feature.mm_position.offset
+            media_len = mm_feature.mm_position.length
+
+            text_len = max(0, offset - st)
+            st_idx = llm_pos_ids_list[-1].max() + 1 if llm_pos_ids_list else 0
+            if text_len > 0:
+                llm_pos_ids_list.append(
+                    np.broadcast_to(np.arange(text_len), (3, text_len)) + st_idx
+                )
+
+            if mm_feature.modality == "image":
+                t, h, w = mm_feature.data["image_grid_thw"].data.tolist()
+                assert t == 1, f"Image must have 1 frame, got {t}"
+                llm_grid_t = 1
+                llm_grid_h = h // spatial_merge_size
+                llm_grid_w = w // spatial_merge_size
+                t_factor = 1.0
+            elif mm_feature.modality == "video":
+                t, h, w = mm_feature.data["video_grid_thw"].data.tolist()
+                llm_grid_t = t
+                llm_grid_h = h // spatial_merge_size
+                llm_grid_w = w // spatial_merge_size
+                second_per_grid_ts = 1.0
+                second_per_grid_ts_data = mm_feature.data.get(
+                    "second_per_grid_ts",
+                    None,
+                )
+                if second_per_grid_ts_data is not None:
+                    second_per_grid_ts = second_per_grid_ts_data.data.item()
+                t_factor = second_per_grid_ts * tokens_per_second
+            else:
+                raise ValueError(f"Unsupported modality: {mm_feature.modality}")
+
+            grid_indices = np.indices((llm_grid_t, llm_grid_h, llm_grid_w))
+            if t_factor != 1.0:
+                grid_indices[0] = (grid_indices[0] * t_factor).astype(np.int64)
+
+            media_pos = grid_indices.reshape(3, -1)
+            if media_pos.shape[1] >= media_len:
+                media_pos = media_pos[:, :media_len]
+            else:
+                pad_len = media_len - media_pos.shape[1]
+                pad_base = (
+                    media_pos[:, -1:]
+                    if media_pos.shape[1] > 0
+                    else np.zeros((3, 1), dtype=np.int64)
+                )
+                pad = pad_base + np.broadcast_to(np.arange(1, pad_len + 1), (3, pad_len))
+                media_pos = np.concatenate([media_pos, pad], axis=1)
+
+            llm_pos_ids_list.append(media_pos + text_len + st_idx)
+            st = offset + media_len
+
+        if st < len(input_tokens):
+            st_idx = llm_pos_ids_list[-1].max() + 1 if llm_pos_ids_list else 0
+            text_len = len(input_tokens) - st
+            llm_pos_ids_list.append(
+                np.broadcast_to(np.arange(text_len), (3, text_len)) + st_idx
+            )
+
+        llm_positions = np.concatenate(llm_pos_ids_list, axis=1).reshape(3, -1)
+        mrope_position_delta = (llm_positions.max() + 1 - len(input_tokens)).item()
+        return torch.from_numpy(llm_positions), mrope_position_delta
+
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__(vllm_config=vllm_config, prefix=prefix)
         self.config.vision_config.architectures = ["CLIPPrunedModel"]
@@ -664,16 +752,31 @@ class Qwen2_5_VLPruneForConditionalGeneration(
         self.visual_token_pruning_method = _get_qwen2_5_visual_token_pruning_method(
             multimodal_config
         )
+        vt_prune_rate = (
+            None if multimodal_config is None else multimodal_config.vt_prune_rate
+        )
+        self.is_visual_token_pruning_enabled = (
+            self.visual_token_pruning_method is not None
+            and vt_prune_rate is not None
+            and vt_prune_rate > 0
+        )
         self.vision_zip_config: _VisionZipConfig | None = None
         self.cdpruner_config: _CDPrunerConfig | None = None
         self.is_vision_zip_recompute_enabled = (
-            self.visual_token_pruning_method == "vision_zip"
+            self.is_visual_token_pruning_enabled
+            and self.visual_token_pruning_method == "vision_zip"
         )
 
         self._prune_impl_cls: type[Any] | None = None
-        if self.visual_token_pruning_method == "vision_zip":
+        if (
+            self.is_visual_token_pruning_enabled
+            and self.visual_token_pruning_method == "vision_zip"
+        ):
             self._prune_impl_cls = Qwen2_5_VLVisionZipForConditionalGeneration
-        elif self.visual_token_pruning_method == "cdpruner":
+        elif (
+            self.is_visual_token_pruning_enabled
+            and self.visual_token_pruning_method == "cdpruner"
+        ):
             self._prune_impl_cls = Qwen2_5_VLCDPruneForConditionalGeneration
 
         if self._prune_impl_cls is not None:

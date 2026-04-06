@@ -60,14 +60,14 @@ export NUM_PROMPTS="${NUM_PROMPTS:-500}"
 export TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-120}"
 export LOG_PATH="${LOG_PATH:-$REPO_ROOT/epdtest/logs}"
 
-export VISION_ZIP_RATE="${VISION_ZIP_RATE:-0.5}"
+export VISUAL_TOKEN_PRUNING_RATE="${VISUAL_TOKEN_PRUNING_RATE:-0.5}"
 export VISION_ZIP_DOMINANT_RATIO="${VISION_ZIP_DOMINANT_RATIO:-0.75}"
 export VISION_ZIP_ATTENTION_LAYER="${VISION_ZIP_ATTENTION_LAYER:--2}"
 
 if [[ "$PRUNE_MODE" == "noprune" ]]; then
     # Downstream scripts default pruning to vision_zip; keep this mode local by
     # stripping all visual-token-pruning CLI args at the vllm call boundary.
-    export VISION_ZIP_RATE=""
+    export VISUAL_TOKEN_PRUNING_RATE=""
     export VISION_ZIP_DOMINANT_RATIO=""
     export VISION_ZIP_ATTENTION_LAYER=""
 
