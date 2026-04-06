@@ -4,14 +4,14 @@
 import torch
 
 from vllm.config.multimodal import MultiModalConfig
-from vllm.model_executor.models.qwen2_5_vl_visionzip import (
+from vllm.model_executor.models.qwen2_5_vl_prune import (
     apply_qwen2_5_vision_zip,
     get_qwen2_5_vision_zip_num_tokens,
 )
 
 
 def test_get_qwen2_5_vision_zip_num_tokens():
-    mm_config = MultiModalConfig(vision_zip_rate=0.75)
+    mm_config = MultiModalConfig(vt_prune_rate=0.75)
     assert get_qwen2_5_vision_zip_num_tokens(576, mm_config) == 144
 
 
@@ -39,7 +39,7 @@ def test_apply_qwen2_5_vision_zip_keeps_positions_in_token_order():
         ]
     )
     mm_config = MultiModalConfig(
-        vision_zip_rate=0.5,
+        vt_prune_rate=0.5,
         vision_zip_dominant_ratio=2.0 / 3.0,
     )
 

@@ -45,10 +45,10 @@ def test_language_model_only_affects_model_hash():
 
 def test_vision_zip_hash_updates():
     base_hash = MultiModalConfig().compute_hash()
-    overridden_hash = MultiModalConfig(vision_zip_rate=0.75).compute_hash()
+    overridden_hash = MultiModalConfig(vt_prune_rate=0.75).compute_hash()
     assert base_hash != overridden_hash
 
 
 def test_vision_zip_enabled():
     assert not MultiModalConfig().is_vision_zip_enabled()
-    assert MultiModalConfig(vision_zip_rate=0.5).is_vision_zip_enabled()
+    assert MultiModalConfig(vt_prune_rate=0.5).is_vision_zip_enabled()

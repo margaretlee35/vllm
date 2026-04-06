@@ -79,7 +79,11 @@ from vllm.config.model import (
     RunnerOption,
     TokenizerMode,
 )
-from vllm.config.multimodal import MMCacheType, MMEncoderTPMode
+from vllm.config.multimodal import (
+    MMCacheType,
+    MMEncoderTPMode,
+    VisualTokenPruningMethod,
+)
 from vllm.config.observability import DetailedTraceModules
 from vllm.config.parallel import (
     All2AllBackend,
@@ -498,10 +502,12 @@ class EngineArgs:
     io_processor_plugin: str | None = None
     skip_mm_profiling: bool = MultiModalConfig.skip_mm_profiling
     video_pruning_rate: float | None = MultiModalConfig.video_pruning_rate
-    vision_zip_rate: float | None = MultiModalConfig.vision_zip_rate
+    visual_token_pruning_method: VisualTokenPruningMethod | None = (
+        MultiModalConfig.visual_token_pruning_method
+    )
+    vt_prune_rate: float | None = MultiModalConfig.vt_prune_rate
     vision_zip_dominant_ratio: float = MultiModalConfig.vision_zip_dominant_ratio
     vision_zip_attention_layer: int = MultiModalConfig.vision_zip_attention_layer
-    vision_zip_debug: bool = MultiModalConfig.vision_zip_debug
     # LoRA fields
     enable_lora: bool = False
     max_loras: int = LoRAConfig.max_loras
@@ -1083,7 +1089,16 @@ class EngineArgs:
             "--video-pruning-rate", **multimodal_kwargs["video_pruning_rate"]
         )
         multimodal_group.add_argument(
-            "--vision-zip-rate", **multimodal_kwargs["vision_zip_rate"]
+            "--visual-token-pruning-method",
+            **multimodal_kwargs["visual_token_pruning_method"],
+        )
+        multimodal_group.add_argument(
+            "--vt-prune-rate", **multimodal_kwargs["vt_prune_rate"]
+        )
+        multimodal_group.add_argument(
+            "--visual-token-pruning-rate",
+            dest="vt_prune_rate",
+            **multimodal_kwargs["vt_prune_rate"],
         )
         multimodal_group.add_argument(
             "--vision-zip-dominant-ratio",
@@ -1092,9 +1107,6 @@ class EngineArgs:
         multimodal_group.add_argument(
             "--vision-zip-attention-layer",
             **multimodal_kwargs["vision_zip_attention_layer"],
-        )
-        multimodal_group.add_argument(
-            "--vision-zip-debug", **multimodal_kwargs["vision_zip_debug"]
         )
 
         # LoRA related configs
@@ -1404,10 +1416,10 @@ class EngineArgs:
             override_attention_dtype=self.override_attention_dtype,
             logits_processors=self.logits_processors,
             video_pruning_rate=self.video_pruning_rate,
-            vision_zip_rate=self.vision_zip_rate,
+            visual_token_pruning_method=self.visual_token_pruning_method,
+            vt_prune_rate=self.vt_prune_rate,
             vision_zip_dominant_ratio=self.vision_zip_dominant_ratio,
             vision_zip_attention_layer=self.vision_zip_attention_layer,
-            vision_zip_debug=self.vision_zip_debug,
             io_processor_plugin=self.io_processor_plugin,
         )
 

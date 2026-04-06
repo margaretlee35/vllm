@@ -247,6 +247,7 @@ _EMBEDDING_MODELS = {
     "XLMRobertaModel": ("roberta", "RobertaEmbeddingModel"),
     # [Multimodal]
     "CLIPModel": ("clip", "CLIPEmbeddingModel"),
+    "CLIPPrunedModel": ("clip_pruned", "CLIPEmbeddingModel"),
     "LlavaNextForConditionalGeneration": (
         "llava_next",
         "LlavaNextForConditionalGeneration",
@@ -482,9 +483,9 @@ _MULTIMODAL_MODELS = {
         "qwen2_5_vl",
         "Qwen2_5_VLForConditionalGeneration",
     ),
-    "Qwen2_5_VLVisionZipForConditionalGeneration": (
-        "qwen2_5_vl_visionzip",
-        "Qwen2_5_VLVisionZipForConditionalGeneration",
+    "Qwen2_5_VLPruneForConditionalGeneration": (
+        "qwen2_5_vl_prune",
+        "Qwen2_5_VLPruneForConditionalGeneration",
     ),
     "Qwen2AudioForConditionalGeneration": (
         "qwen2_audio",

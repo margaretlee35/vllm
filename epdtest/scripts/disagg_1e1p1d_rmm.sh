@@ -20,14 +20,17 @@ EC_SHARED_STORAGE_PATH="${EC_SHARED_STORAGE_PATH:-/tmp/ec_cache}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-12000}"
 
 NUM_PROMPTS="${NUM_PROMPTS:-500}"
+BENCH_REQUEST_RATE="${BENCH_REQUEST_RATE:-32}"
+BENCH_MAX_CONCURRENCY="${BENCH_MAX_CONCURRENCY:-32}"
 PD_MAX_MODEL_LEN="${PD_MAX_MODEL_LEN:-65536}"
 PD_MAX_NUM_BATCHED_TOKENS="${PD_MAX_NUM_BATCHED_TOKENS:-32768}"
-PD_MAX_NUM_SEQS="${PD_MAX_NUM_SEQS:-64}"
+PD_MAX_NUM_SEQS="${PD_MAX_NUM_SEQS:-32}"
 NIXL_BASE_PORT="${NIXL_BASE_PORT:-$((5200 + ($$ % 1000)))}"
 PREFILL_NIXL_SIDE_CHANNEL_PORT="${PREFILL_NIXL_SIDE_CHANNEL_PORT:-$NIXL_BASE_PORT}"
 DECODE_NIXL_SIDE_CHANNEL_PORT="${DECODE_NIXL_SIDE_CHANNEL_PORT:-$((NIXL_BASE_PORT + 1000))}"
 PREFILL_GPU_MEMORY_UTILIZATION="${PREFILL_GPU_MEMORY_UTILIZATION:-0.85}"
 DECODE_GPU_MEMORY_UTILIZATION="${DECODE_GPU_MEMORY_UTILIZATION:-0.85}"
+VISUAL_TOKEN_PRUNING_METHOD="${VISUAL_TOKEN_PRUNING_METHOD:-vision_zip}"
 VISION_ZIP_RATE="${VISION_ZIP_RATE:-}"
 VISION_ZIP_DOMINANT_RATIO="${VISION_ZIP_DOMINANT_RATIO:-}"
 VISION_ZIP_ATTENTION_LAYER="${VISION_ZIP_ATTENTION_LAYER:-}"
@@ -84,14 +87,17 @@ trap cleanup TERM
 rm -rf "$EC_SHARED_STORAGE_PATH"
 mkdir -p "$EC_SHARED_STORAGE_PATH"
 
-declare -a VISION_ZIP_ARGS=(--vision-zip-debug)
-if [[ -n "${VISION_ZIP_RATE:-}" ]]; then
-    VISION_ZIP_ARGS+=(--vision-zip-rate "$VISION_ZIP_RATE")
+declare -a VISION_ZIP_ARGS=()
+if [[ -n "${VISUAL_TOKEN_PRUNING_METHOD:-}" ]]; then
+    VISION_ZIP_ARGS+=(--visual-token-pruning-method "$VISUAL_TOKEN_PRUNING_METHOD")
 fi
-if [[ -n "${VISION_ZIP_DOMINANT_RATIO:-}" ]]; then
+if [[ -n "${VISION_ZIP_RATE:-}" ]]; then
+    VISION_ZIP_ARGS+=(--vt-prune-rate "$VISION_ZIP_RATE")
+fi
+if [[ "${VISUAL_TOKEN_PRUNING_METHOD:-}" == "vision_zip" && -n "${VISION_ZIP_DOMINANT_RATIO:-}" ]]; then
     VISION_ZIP_ARGS+=(--vision-zip-dominant-ratio "$VISION_ZIP_DOMINANT_RATIO")
 fi
-if [[ -n "${VISION_ZIP_ATTENTION_LAYER:-}" ]]; then
+if [[ "${VISUAL_TOKEN_PRUNING_METHOD:-}" == "vision_zip" && -n "${VISION_ZIP_ATTENTION_LAYER:-}" ]]; then
     VISION_ZIP_ARGS+=(--vision-zip-attention-layer "$VISION_ZIP_ATTENTION_LAYER")
 fi
 
@@ -198,6 +204,8 @@ vllm bench serve \
     --dataset-name random-mm \
     --seed 0 \
     --num-prompts "$NUM_PROMPTS" \
+    --request-rate "$BENCH_REQUEST_RATE" \
+    --max-concurrency "$BENCH_MAX_CONCURRENCY" \
     --random-mm-base-items-per-request "${IMAGES_PER_REQ:-1}" \
     --random-mm-num-mm-items-range-ratio 0 \
     --random-mm-limit-mm-per-prompt "{\"image\": ${IMAGES_PER_REQ:-1}, \"video\": 0}" \

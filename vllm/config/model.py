@@ -14,7 +14,12 @@ import vllm.envs as envs
 from vllm.config.model_arch import (
     ModelArchitectureConfig,
 )
-from vllm.config.multimodal import MMCacheType, MMEncoderTPMode, MultiModalConfig
+from vllm.config.multimodal import (
+    MMCacheType,
+    MMEncoderTPMode,
+    MultiModalConfig,
+    VisualTokenPruningMethod,
+)
 from vllm.config.pooler import PoolerConfig
 from vllm.config.scheduler import RunnerType
 from vllm.config.utils import config, getattr_iter
@@ -310,10 +315,10 @@ class ModelConfig:
     interleave_mm_strings: InitVar[bool | None] = None
     skip_mm_profiling: InitVar[bool | None] = None
     video_pruning_rate: InitVar[float | None] = None
-    vision_zip_rate: InitVar[float | None] = None
+    visual_token_pruning_method: InitVar[VisualTokenPruningMethod | None] = None
+    vt_prune_rate: InitVar[float | None] = None
     vision_zip_dominant_ratio: InitVar[float | None] = None
     vision_zip_attention_layer: InitVar[int | None] = None
-    vision_zip_debug: InitVar[bool | None] = None
 
     def compute_hash(self) -> str:
         """
@@ -434,10 +439,10 @@ class ModelConfig:
         interleave_mm_strings: bool | None,
         skip_mm_profiling: bool | None,
         video_pruning_rate: float | None,
-        vision_zip_rate: float | None,
+        visual_token_pruning_method: VisualTokenPruningMethod | None,
+        vt_prune_rate: float | None,
         vision_zip_dominant_ratio: float | None,
         vision_zip_attention_layer: int | None,
-        vision_zip_debug: bool | None,
     ) -> None:
         # Keep set served_model_name before maybe_model_redirect(self.model)
         self.served_model_name = get_served_model_name(
@@ -506,6 +511,20 @@ class ModelConfig:
         self.hf_image_processor_config = get_hf_image_processor_config(
             self.model, hf_token=self.hf_token, revision=self.revision
         )
+
+        # When visual-token pruning is explicitly requested for Qwen2.5-VL,
+        # route to the prune wrapper architecture without requiring
+        # manual --hf-overrides in launch scripts.
+        if visual_token_pruning_method is not None:
+            architectures = getattr(self.hf_config, "architectures", None)
+            if architectures is not None and "Qwen2_5_VLForConditionalGeneration" in architectures:
+                self.hf_config.architectures = [
+                    "Qwen2_5_VLPruneForConditionalGeneration"
+                    if arch == "Qwen2_5_VLForConditionalGeneration"
+                    else arch
+                    for arch in architectures
+                ]
+
         self.model_arch_config = self.get_model_arch_config()
 
         architectures = self.architectures
@@ -618,10 +637,10 @@ class ModelConfig:
                 interleave_mm_strings=interleave_mm_strings,
                 skip_mm_profiling=skip_mm_profiling,
                 video_pruning_rate=video_pruning_rate,
-                vision_zip_rate=vision_zip_rate,
+                visual_token_pruning_method=visual_token_pruning_method,
+                vt_prune_rate=vt_prune_rate,
                 vision_zip_dominant_ratio=vision_zip_dominant_ratio,
                 vision_zip_attention_layer=vision_zip_attention_layer,
-                vision_zip_debug=vision_zip_debug,
             )
 
             mm_config_kwargs = {
@@ -629,6 +648,18 @@ class ModelConfig:
             }
 
             self.multimodal_config = MultiModalConfig(**mm_config_kwargs)
+
+        if (
+            self.multimodal_config is not None
+            and self.multimodal_config.get_visual_token_pruning_method() is not None
+            and self.generation_config == "auto"
+        ):
+            # Qwen2.5-VL generation_config may set near-greedy temperature
+            # (e.g., 1e-06), which can produce empty completions on synthetic
+            # benchmark prompts and collapse TTFT/TPOT metrics to zero.
+            # For pruning benchmarks, prefer neutral vLLM defaults.
+            self.generation_config = "vllm"
+            self.override_generation_config.setdefault("min_new_tokens", 1)
 
         # Multimodal GGUF models must use original repo for mm processing
         if is_gguf(self.tokenizer) and self.is_multimodal_model:
@@ -1368,6 +1399,7 @@ class ModelConfig:
             "top_p",
             "min_p",
             "max_new_tokens",
+            "min_new_tokens",
         ]
         if any(p in config for p in available_params):
             diff_sampling_param = {
@@ -1378,6 +1410,10 @@ class ModelConfig:
             if "max_new_tokens" in diff_sampling_param:
                 diff_sampling_param["max_tokens"] = diff_sampling_param.pop(
                     "max_new_tokens"
+                )
+            if "min_new_tokens" in diff_sampling_param:
+                diff_sampling_param["min_tokens"] = diff_sampling_param.pop(
+                    "min_new_tokens"
                 )
         else:
             diff_sampling_param = {}
