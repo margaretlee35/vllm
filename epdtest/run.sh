@@ -192,16 +192,27 @@ esac
 
 run_once() {
     local images_per_req="${1:-}"
+    local run_stamp
+    local run_suffix=""
+    local target_output_log
+
+    run_stamp=$(date +"%Y%m%d_%H%M%S")
 
     if [[ -n "$images_per_req" ]]; then
         export IMAGES_PER_REQ="$images_per_req"
+        run_suffix="_ipr${images_per_req}"
     fi
+
+    export RUN_DIR="${LOG_PATH}/${run_stamp}${run_suffix}"
+    mkdir -p "$RUN_DIR"
+    target_output_log="$RUN_DIR/target_script.log"
 
     echo "epdtest launcher"
     echo "  topology       : $TOPOLOGY"
     echo "  profile        : $PROFILE"
     echo "  model          : $MODEL"
     echo "  log_path       : ${LOG_PATH#$GIT_ROOT/}"
+    echo "  run_dir        : ${RUN_DIR#$GIT_ROOT/}"
     if [[ "$PROFILE" == "randommm" ]]; then
         echo "  image sweep    : $IMAGES_PER_REQ_LIST"
     fi
@@ -218,8 +229,9 @@ run_once() {
         echo "  vz_attn_layer  : $VISION_ZIP_ATTENTION_LAYER"
     fi
     echo "  script         : ${TARGET_SCRIPT#$GIT_ROOT/}"
+    echo "  target_output  : ${target_output_log#$GIT_ROOT/}"
 
-    bash "$TARGET_SCRIPT"
+    bash "$TARGET_SCRIPT" 2>&1 | tee "$target_output_log"
 }
 
 activate_venv
