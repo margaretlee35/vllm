@@ -190,20 +190,19 @@ case "${TOPOLOGY}:${PROFILE}" in
         ;;
 esac
 
+RUN_STAMP="${RUN_STAMP:-$(date +"%Y%m%d_%H%M%S")}"
+
 run_once() {
     local images_per_req="${1:-}"
-    local run_stamp
-    local run_suffix=""
     local target_output_log
-
-    run_stamp=$(date +"%Y%m%d_%H%M%S")
 
     if [[ -n "$images_per_req" ]]; then
         export IMAGES_PER_REQ="$images_per_req"
-        run_suffix="_ipr${images_per_req}"
+        export RUN_DIR="${LOG_PATH}/${RUN_STAMP}/ipr${images_per_req}"
+    else
+        export RUN_DIR="${LOG_PATH}/${RUN_STAMP}"
     fi
 
-    export RUN_DIR="${LOG_PATH}/${run_stamp}${run_suffix}"
     mkdir -p "$RUN_DIR"
     target_output_log="$RUN_DIR/target_script.log"
 
