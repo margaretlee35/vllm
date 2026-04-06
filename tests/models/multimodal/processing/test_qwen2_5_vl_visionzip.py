@@ -24,7 +24,7 @@ def test_qwen2_5_vl_visionzip_processor_reduces_image_placeholders(
     base_tokenizer = base_processor.info.get_tokenizer()
 
     model_info = HF_EXAMPLE_MODELS.get_hf_info(
-        "Qwen2_5_VLVisionZipForConditionalGeneration"
+        "Qwen2_5_VLPruneForConditionalGeneration"
     )
     model_config = ModelConfig(
         model_id,
@@ -36,7 +36,7 @@ def test_qwen2_5_vl_visionzip_processor_reduces_image_placeholders(
         limit_mm_per_prompt={"image": 1},
         hf_overrides=model_info.hf_overrides,
         max_model_len=model_info.max_model_len,
-        vision_zip_rate=0.5,
+        vt_prune_rate=0.5,
     )
     processor = MULTIMODAL_REGISTRY.create_processor(model_config)
 

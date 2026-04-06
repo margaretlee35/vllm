@@ -469,19 +469,17 @@ def test_composite_arg_parser(arg, expected, option):
 def test_vision_zip_args():
     parser = EngineArgs.add_cli_args(FlexibleArgumentParser())
     args = parser.parse_args([
-        "--vision-zip-rate",
+        "--vt-prune-rate",
         "0.5",
         "--vision-zip-dominant-ratio",
         "0.75",
         "--vision-zip-attention-layer",
         "-3",
-        "--vision-zip-debug",
     ])
 
-    assert args.vision_zip_rate == 0.5
+    assert args.vt_prune_rate == 0.5
     assert args.vision_zip_dominant_ratio == 0.75
     assert args.vision_zip_attention_layer == -3
-    assert args.vision_zip_debug is True
 
 
 def test_human_readable_model_len():

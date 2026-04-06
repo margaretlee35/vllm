@@ -1,21 +1,20 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-"""VisionZip wrapper for Qwen2.5-VL.
+"""Visual-token pruning wrapper for Qwen2.5-VL.
 
-This keeps the base Qwen2.5-VL path unchanged and exposes VisionZip as a
-separate architecture that can be selected via HF architecture override.
+This keeps the base Qwen2.5-VL path unchanged and exposes a separate
+architecture that can be selected via HF architecture override.
 
-The implementation follows the VisionZip Qwen2.5-VL integration pattern from
-JIA-Lab's public repository by collecting attention-derived token importance
-from a configurable vision layer and pruning image tokens before they are fed
-into the language model.
+The current implementation includes VisionZip as the first pruning method.
+The module is structured as a method-dispatch layer so additional visual-token
+pruning strategies can be added with minimal integration churn.
 """
 
 import math
 from collections.abc import Mapping, Sequence
 from functools import partial
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol, cast
 
 import einops
 import torch
@@ -25,7 +24,6 @@ from transformers import BatchFeature
 
 from vllm.config import VllmConfig
 from vllm.forward_context import set_forward_context
-from vllm.logger import init_logger
 from vllm.model_executor.layers.activation import get_act_and_mul_fn
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.multimodal import MULTIMODAL_REGISTRY
@@ -51,38 +49,104 @@ from .qwen2_5_vl import (
 from .utils import maybe_prefix
 from .utils import cast_overflow_tensors
 
-logger = init_logger(__name__)
+VisualTokenPruningMethod = Literal["vision_zip", "cdpruner"]
+_CDPRUNER_NOT_IMPLEMENTED = (
+    "Qwen2.5-VL 'cdpruner' visual-token pruning is not implemented yet."
+)
 
 
-class _VisionZipMultiModalConfig(Protocol):
-    vision_zip_rate: float | None
+class _VisualTokenPruneMultiModalConfig(Protocol):
+    visual_token_pruning_method: VisualTokenPruningMethod | None
+    vt_prune_rate: float | None
+    def get_visual_token_pruning_method(self) -> VisualTokenPruningMethod | None: ...
+
+
+class _VisionZipConfig(_VisualTokenPruneMultiModalConfig, Protocol):
     vision_zip_dominant_ratio: float
     vision_zip_attention_layer: int
-    vision_zip_debug: bool
 
-    def is_vision_zip_enabled(self) -> bool: ...
+
+class _CDPrunerConfig(_VisualTokenPruneMultiModalConfig, Protocol):
+    cdpruner_debug: bool
+
+
+def _get_qwen2_5_visual_token_pruning_method(
+    mm_config: _VisualTokenPruneMultiModalConfig | None,
+) -> VisualTokenPruningMethod | None:
+    if mm_config is None:
+        return None
+    return mm_config.get_visual_token_pruning_method()
+
+
+def _get_qwen2_5_prune_config(
+    mm_config: _VisualTokenPruneMultiModalConfig | None,
+) -> _VisionZipConfig | _CDPrunerConfig | None:
+    pruning_method = _get_qwen2_5_visual_token_pruning_method(mm_config)
+    if pruning_method == "vision_zip":
+        return cast(_VisionZipConfig, mm_config)
+    if pruning_method == "cdpruner":
+        return cast(_CDPrunerConfig, mm_config)
+    return None
 
 
 def _get_qwen2_5_vision_zip_config(
-    mm_config: _VisionZipMultiModalConfig | None,
-) -> _VisionZipMultiModalConfig | None:
-    if mm_config is None or not mm_config.is_vision_zip_enabled():
+    mm_config: _VisualTokenPruneMultiModalConfig | None,
+) -> _VisionZipConfig | None:
+    if _get_qwen2_5_visual_token_pruning_method(mm_config) != "vision_zip":
         return None
-    return mm_config
+    return cast(_VisionZipConfig, _get_qwen2_5_prune_config(mm_config))
 
 
-def get_qwen2_5_vision_zip_num_tokens(
+def _get_qwen2_5_cdpruner_config(
+    mm_config: _VisualTokenPruneMultiModalConfig | None,
+) -> _CDPrunerConfig | None:
+    if _get_qwen2_5_visual_token_pruning_method(mm_config) != "cdpruner":
+        return None
+    return cast(_CDPrunerConfig, _get_qwen2_5_prune_config(mm_config))
+
+
+def get_qwen2_5_pruned_num_tokens(
     num_tokens: int,
-    mm_config: _VisionZipMultiModalConfig | None,
+    mm_config: _VisualTokenPruneMultiModalConfig | None,
 ) -> int:
-    vision_zip_config = _get_qwen2_5_vision_zip_config(mm_config)
-    if vision_zip_config is None:
+    config = _get_qwen2_5_prune_config(mm_config)
+    if config is None or config.vt_prune_rate is None:
         return num_tokens
 
-    keep_tokens = math.ceil(num_tokens * (1.0 - vision_zip_config.vision_zip_rate))
+    keep_tokens = math.ceil(num_tokens * (1.0 - config.vt_prune_rate))
     return max(1, min(num_tokens, keep_tokens))
 
 
+def apply_qwen2_5_visual_token_pruning(
+    image_features: torch.Tensor,
+    importance_scores: torch.Tensor,
+    key_states: torch.Tensor,
+    positions: torch.Tensor,
+    mm_config: _VisualTokenPruneMultiModalConfig | None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    pruning_method = _get_qwen2_5_visual_token_pruning_method(mm_config)
+    if pruning_method is None:
+        return image_features, positions
+    
+    if pruning_method == "vision_zip":
+        return apply_qwen2_5_vision_zip(
+            image_features,
+            importance_scores,
+            key_states,
+            positions,
+            mm_config,
+        )
+    
+    if pruning_method == "cdpruner":
+        raise NotImplementedError(_CDPRUNER_NOT_IMPLEMENTED)
+    
+    raise NotImplementedError(
+        f"Unsupported Qwen2.5-VL visual-token pruning method: {pruning_method!r}"
+    )
+
+##################################################################
+########################### VisionZip ############################
+##################################################################
 def _get_qwen2_5_vision_zip_split(
     keep_tokens: int,
     dominant_ratio: float,
@@ -98,7 +162,7 @@ def apply_qwen2_5_vision_zip(
     importance_scores: torch.Tensor,
     key_states: torch.Tensor,
     positions: torch.Tensor,
-    mm_config: _VisionZipMultiModalConfig | None,
+    mm_config: _VisualTokenPruneMultiModalConfig | None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     vision_zip_config = _get_qwen2_5_vision_zip_config(mm_config)
     if vision_zip_config is None:
@@ -108,17 +172,9 @@ def apply_qwen2_5_vision_zip(
     if num_tokens == 0:
         return image_features, positions
 
-    keep_tokens = get_qwen2_5_vision_zip_num_tokens(num_tokens, vision_zip_config)
+    keep_tokens = get_qwen2_5_pruned_num_tokens(num_tokens, vision_zip_config)
     if keep_tokens >= num_tokens:
         return image_features, positions
-
-    if vision_zip_config.vision_zip_debug:
-        logger.info(
-            "VisionZip pruned %d/%d visual tokens for Qwen2.5-VL (kept %d).",
-            num_tokens - keep_tokens,
-            num_tokens,
-            keep_tokens,
-        )
 
     dominant_tokens, contextual_tokens = _get_qwen2_5_vision_zip_split(
         keep_tokens,
@@ -184,6 +240,7 @@ def apply_qwen2_5_vision_zip(
 
     order = kept_anchor_indices.argsort()
     return kept_features[order], kept_positions[order]
+
 
 
 class Qwen2_5_VisionZipAttention(Qwen2_5_VisionAttention):
@@ -490,9 +547,23 @@ class Qwen2_5_VisionTransformerVisionZip(Qwen2_5_VisionTransformer):
         merged_importance = merged_importance[reverse_indices]
         merged_keys = merged_keys[reverse_indices]
         return hidden_states, merged_importance, merged_keys
+##################################################################
 
 
-class Qwen2_5_VLVisionZipProcessingInfo(Qwen2_5_VLProcessingInfo):
+
+##################################################################
+########################### CDPrune ############################
+##################################################################
+# TODO
+##################################################################
+
+
+
+############
+# Register
+############
+
+class Qwen2_5_VLPruneProcessingInfo(Qwen2_5_VLProcessingInfo):
     def get_num_image_tokens(
         self,
         *,
@@ -507,13 +578,13 @@ class Qwen2_5_VLVisionZipProcessingInfo(Qwen2_5_VLProcessingInfo):
             image_processor=image_processor,
             mm_kwargs=mm_kwargs,
         )
-        return get_qwen2_5_vision_zip_num_tokens(
+        return get_qwen2_5_pruned_num_tokens(
             num_tokens,
             self.ctx.model_config.multimodal_config,
         )
 
 
-class Qwen2_5_VLVisionZipMultiModalProcessor(Qwen2_5_VLMultiModalProcessor):
+class Qwen2_5_VLPruneMultiModalProcessor(Qwen2_5_VLMultiModalProcessor):
     def _get_prompt_updates(
         self,
         mm_items: MultiModalDataItems,
@@ -539,7 +610,7 @@ class Qwen2_5_VLVisionZipMultiModalProcessor(Qwen2_5_VLMultiModalProcessor):
 
             num_tokens = int(grid_thw.prod()) // merge_length
             if modality == "image":
-                num_tokens = get_qwen2_5_vision_zip_num_tokens(
+                num_tokens = get_qwen2_5_pruned_num_tokens(
                     num_tokens,
                     mm_config,
                 )
@@ -576,49 +647,133 @@ class Qwen2_5_VLVisionZipMultiModalProcessor(Qwen2_5_VLMultiModalProcessor):
         return super()._get_mm_fields_config(hf_inputs, hf_processor_mm_kwargs)
 
 
+
 @MULTIMODAL_REGISTRY.register_processor(
-    Qwen2_5_VLVisionZipMultiModalProcessor,
-    info=Qwen2_5_VLVisionZipProcessingInfo,
+    Qwen2_5_VLPruneMultiModalProcessor,
+    info=Qwen2_5_VLPruneProcessingInfo,
     dummy_inputs=Qwen2_5_VLDummyInputsBuilder,
 )
-class Qwen2_5_VLVisionZipForConditionalGeneration(
+class Qwen2_5_VLPruneForConditionalGeneration(
     Qwen2_5_VLForConditionalGeneration
 ):
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__(vllm_config=vllm_config, prefix=prefix)
+        self.config.vision_config.architectures = ["CLIPPrunedModel"]
 
         multimodal_config = vllm_config.model_config.multimodal_config
-        self.vision_zip_config = _get_qwen2_5_vision_zip_config(multimodal_config)
-        self.is_vision_zip_recompute_enabled = self.vision_zip_config is not None
+        self.visual_token_pruning_method = _get_qwen2_5_visual_token_pruning_method(
+            multimodal_config
+        )
+        self.vision_zip_config: _VisionZipConfig | None = None
+        self.cdpruner_config: _CDPrunerConfig | None = None
+        self.is_vision_zip_recompute_enabled = (
+            self.visual_token_pruning_method == "vision_zip"
+        )
 
-        if self.vision_zip_config is None:
-            return
+        self._prune_impl_cls: type[Any] | None = None
+        if self.visual_token_pruning_method == "vision_zip":
+            self._prune_impl_cls = Qwen2_5_VLVisionZipForConditionalGeneration
+        elif self.visual_token_pruning_method == "cdpruner":
+            self._prune_impl_cls = Qwen2_5_VLCDPruneForConditionalGeneration
 
-        if self.use_data_parallel:
+        if self._prune_impl_cls is not None:
+            self._prune_impl_cls._init_prune_method(
+                self,
+                prefix=prefix,
+                multimodal_config=multimodal_config,
+            )
+
+    def _raise_cdpruner_not_implemented(self) -> None:
+        raise NotImplementedError(_CDPRUNER_NOT_IMPLEMENTED)
+
+    def _process_image_input_by_method(
+        self, image_input: Qwen2_5_VLImageInputs
+    ) -> tuple[torch.Tensor, ...]:
+        if self._prune_impl_cls is not None:
+            return self._prune_impl_cls._process_image_input_for_pruning(
+                self, image_input
+            )
+
+        image_embeddings = self._process_image_input(image_input)
+        if self.is_multimodal_pruning_enabled:
+            image_embeddings = self._postprocess_image_embeds_evs(
+                image_embeddings, image_input
+            )
+        return tuple(image_embeddings)
+
+    def _process_video_input_by_method(
+        self, video_input: Qwen2_5_VLVideoInputs
+    ) -> tuple[torch.Tensor, ...]:
+        video_embeddings = self._process_video_input(video_input)
+        if self.is_multimodal_pruning_enabled:
+            video_embeddings = self._postprocess_video_embeds_evs(
+                video_embeddings, video_input
+            )
+        elif self._prune_impl_cls is not None:
+            video_embeddings = self._prune_impl_cls._process_video_input_for_pruning(
+                self,
+                video_input,
+                tuple(video_embeddings),
+            )
+        return tuple(video_embeddings)
+
+    def embed_multimodal(self, **kwargs: object):
+        mm_input_by_modality = self._parse_and_validate_multimodal_inputs(**kwargs)
+        if not mm_input_by_modality:
+            return []
+
+        multimodal_embeddings: tuple[torch.Tensor, ...] = ()
+        for modality, multimodal_input in mm_input_by_modality.items():
+            if modality == "image":
+                multimodal_embeddings += self._process_image_input_by_method(
+                    multimodal_input
+                )
+            elif modality == "video":
+                multimodal_embeddings += self._process_video_input_by_method(
+                    multimodal_input
+                )
+
+        return multimodal_embeddings
+
+
+class Qwen2_5_VLVisionZipForConditionalGeneration(
+    Qwen2_5_VLPruneForConditionalGeneration
+):
+    @staticmethod
+    def _init_prune_method(
+        model: Qwen2_5_VLPruneForConditionalGeneration,
+        *,
+        prefix: str,
+        multimodal_config: _VisualTokenPruneMultiModalConfig | None,
+    ) -> None:
+        if model.use_data_parallel:
             raise NotImplementedError(
                 "Qwen2.5-VL VisionZip is not currently supported with "
                 "`mm_encoder_tp_mode=\"data\"`."
             )
+        model.vision_zip_config = _get_qwen2_5_vision_zip_config(multimodal_config)
+        assert model.vision_zip_config is not None
 
-        attention_layer = self.vision_zip_config.vision_zip_attention_layer
+        attention_layer = model.vision_zip_config.vision_zip_attention_layer
         if attention_layer < 0:
-            attention_layer += self.config.vision_config.depth
-        if not 0 <= attention_layer < self.config.vision_config.depth:
+            attention_layer += model.config.vision_config.depth
+        if not 0 <= attention_layer < model.config.vision_config.depth:
             raise ValueError(
                 "VisionZip attention layer must be within the Qwen2.5-VL vision "
                 "encoder depth."
             )
 
-        self.visual = Qwen2_5_VisionTransformerVisionZip(
-            vision_config=self.config.vision_config,
+        model.visual = Qwen2_5_VisionTransformerVisionZip(
+            vision_config=model.config.vision_config,
             vision_zip_attention_layer=attention_layer,
-            norm_eps=getattr(self.config, "rms_norm_eps", 1e-6),
-            quant_config=self.quant_config,
+            norm_eps=getattr(model.config, "rms_norm_eps", 1e-6),
+            quant_config=model.quant_config,
             prefix=maybe_prefix(prefix, "visual"),
         )
 
+    @staticmethod
     def _append_original_mrope_positions_to_videos(
-        self,
+        model: Qwen2_5_VLPruneForConditionalGeneration,
         video_embeds_split: tuple[torch.Tensor, ...],
         video_input: Qwen2_5_VLVideoInputs,
     ) -> tuple[torch.Tensor, ...]:
@@ -634,8 +789,8 @@ class Qwen2_5_VLVisionZipForConditionalGeneration(
             )
 
         second_per_grid_ts = second_per_grid_ts.long()
-        merge_size = self.visual.spatial_merge_size
-        tokens_per_second = self.config.vision_config.tokens_per_second
+        merge_size = model.visual.spatial_merge_size
+        tokens_per_second = model.config.vision_config.tokens_per_second
 
         video_embeds_out = []
         for emb, size, video_second_per_grid_t in zip(
@@ -652,8 +807,9 @@ class Qwen2_5_VLVisionZipForConditionalGeneration(
             video_embeds_out.append(torch.cat([emb, positions], dim=1))
         return tuple(video_embeds_out)
 
-    def _process_image_input_with_visionzip(
-        self,
+    @staticmethod
+    def _process_image_input_for_pruning(
+        model: Qwen2_5_VLPruneForConditionalGeneration,
         image_input: Qwen2_5_VLImageInputs,
     ) -> tuple[torch.Tensor, ...]:
         if image_input["type"] == "image_embeds":
@@ -668,14 +824,14 @@ class Qwen2_5_VLVisionZipForConditionalGeneration(
         grid_thw_list = grid_thw.tolist()
 
         pixel_values = image_input["pixel_values"]
-        with set_forward_context(None, self.vllm_config):
-            image_embeds, image_scores, image_keys = self.visual(
+        with set_forward_context(None, model.vllm_config):
+            image_embeds, image_scores, image_keys = model.visual(
                 pixel_values,
                 grid_thw=grid_thw_list,
                 return_visionzip_metadata=True,
             )
 
-        merge_size = self.visual.spatial_merge_size
+        merge_size = model.visual.spatial_merge_size
         sizes = (grid_thw.prod(-1) // merge_size // merge_size).tolist()
 
         image_embeds_split = image_embeds.split(sizes)
@@ -695,45 +851,54 @@ class Qwen2_5_VLVisionZipForConditionalGeneration(
                 scores,
                 keys,
                 positions,
-                self.vision_zip_config,
+                model.vision_zip_config,
             )
             image_embeds_out.append(torch.cat([emb, positions], dim=1))
         return tuple(image_embeds_out)
 
-    def embed_multimodal(self, **kwargs: object):
-        mm_input_by_modality = self._parse_and_validate_multimodal_inputs(**kwargs)
-        if not mm_input_by_modality:
-            return []
+    @staticmethod
+    def _process_video_input_for_pruning(
+        model: Qwen2_5_VLPruneForConditionalGeneration,
+        video_input: Qwen2_5_VLVideoInputs,
+        video_embeddings: tuple[torch.Tensor, ...],
+    ) -> tuple[torch.Tensor, ...]:
+        return Qwen2_5_VLVisionZipForConditionalGeneration._append_original_mrope_positions_to_videos(
+            model,
+            video_embeddings,
+            video_input,
+        )
 
-        multimodal_embeddings: tuple[torch.Tensor, ...] = ()
-        for modality in mm_input_by_modality:
-            multimodal_input = mm_input_by_modality[modality]
-            if modality == "image":
-                if self.vision_zip_config is not None:
-                    image_embeddings = self._process_image_input_with_visionzip(
-                        multimodal_input
-                    )
-                else:
-                    image_embeddings = self._process_image_input(multimodal_input)
-                    if self.is_multimodal_pruning_enabled:
-                        image_embeddings = self._postprocess_image_embeds_evs(
-                            image_embeddings,
-                            multimodal_input,
-                        )
-                multimodal_embeddings += tuple(image_embeddings)
 
-            if modality == "video":
-                video_embeddings = self._process_video_input(multimodal_input)
-                if self.is_multimodal_pruning_enabled:
-                    video_embeddings = self._postprocess_video_embeds_evs(
-                        video_embeddings,
-                        multimodal_input,
-                    )
-                elif self.vision_zip_config is not None:
-                    video_embeddings = self._append_original_mrope_positions_to_videos(
-                        video_embeddings,
-                        multimodal_input,
-                    )
-                multimodal_embeddings += tuple(video_embeddings)
+# TODO
+class Qwen2_5_VLCDPruneForConditionalGeneration(
+    Qwen2_5_VLPruneForConditionalGeneration
+):
+    @staticmethod
+    def _init_prune_method(
+        model: Qwen2_5_VLPruneForConditionalGeneration,
+        *,
+        prefix: str,
+        multimodal_config: _VisualTokenPruneMultiModalConfig | None,
+    ) -> None:
+        del prefix
+        model.cdpruner_config = _get_qwen2_5_cdpruner_config(multimodal_config)
+        assert model.cdpruner_config is not None
 
-        return multimodal_embeddings
+    @staticmethod
+    def _process_image_input_for_pruning(
+        model: Qwen2_5_VLPruneForConditionalGeneration,
+        image_input: Qwen2_5_VLImageInputs,
+    ) -> tuple[torch.Tensor, ...]:
+        del image_input
+        model._raise_cdpruner_not_implemented()
+        raise RuntimeError("unreachable")
+
+    @staticmethod
+    def _process_video_input_for_pruning(
+        model: Qwen2_5_VLPruneForConditionalGeneration,
+        video_input: Qwen2_5_VLVideoInputs,
+        video_embeddings: tuple[torch.Tensor, ...],
+    ) -> tuple[torch.Tensor, ...]:
+        del video_input, video_embeddings
+        model._raise_cdpruner_not_implemented()
+        raise RuntimeError("unreachable")

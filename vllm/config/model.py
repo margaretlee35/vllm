@@ -14,7 +14,12 @@ import vllm.envs as envs
 from vllm.config.model_arch import (
     ModelArchitectureConfig,
 )
-from vllm.config.multimodal import MMCacheType, MMEncoderTPMode, MultiModalConfig
+from vllm.config.multimodal import (
+    MMCacheType,
+    MMEncoderTPMode,
+    MultiModalConfig,
+    VisualTokenPruningMethod,
+)
 from vllm.config.pooler import PoolerConfig
 from vllm.config.scheduler import RunnerType
 from vllm.config.utils import config, getattr_iter
@@ -310,10 +315,10 @@ class ModelConfig:
     interleave_mm_strings: InitVar[bool | None] = None
     skip_mm_profiling: InitVar[bool | None] = None
     video_pruning_rate: InitVar[float | None] = None
-    vision_zip_rate: InitVar[float | None] = None
+    visual_token_pruning_method: InitVar[VisualTokenPruningMethod | None] = None
+    vt_prune_rate: InitVar[float | None] = None
     vision_zip_dominant_ratio: InitVar[float | None] = None
     vision_zip_attention_layer: InitVar[int | None] = None
-    vision_zip_debug: InitVar[bool | None] = None
 
     def compute_hash(self) -> str:
         """
@@ -434,10 +439,10 @@ class ModelConfig:
         interleave_mm_strings: bool | None,
         skip_mm_profiling: bool | None,
         video_pruning_rate: float | None,
-        vision_zip_rate: float | None,
+        visual_token_pruning_method: VisualTokenPruningMethod | None,
+        vt_prune_rate: float | None,
         vision_zip_dominant_ratio: float | None,
         vision_zip_attention_layer: int | None,
-        vision_zip_debug: bool | None,
     ) -> None:
         # Keep set served_model_name before maybe_model_redirect(self.model)
         self.served_model_name = get_served_model_name(
@@ -618,10 +623,10 @@ class ModelConfig:
                 interleave_mm_strings=interleave_mm_strings,
                 skip_mm_profiling=skip_mm_profiling,
                 video_pruning_rate=video_pruning_rate,
-                vision_zip_rate=vision_zip_rate,
+                visual_token_pruning_method=visual_token_pruning_method,
+                vt_prune_rate=vt_prune_rate,
                 vision_zip_dominant_ratio=vision_zip_dominant_ratio,
                 vision_zip_attention_layer=vision_zip_attention_layer,
-                vision_zip_debug=vision_zip_debug,
             )
 
             mm_config_kwargs = {
