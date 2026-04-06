@@ -128,5 +128,9 @@ The main variables to override are now consumed by `run.sh`:
 ## Notes
 
 - `epdtest/logs/` is still the home for logs and log analysis helpers.
+- Each run now creates a timestamped subdirectory like
+  `epdtest/logs/20260405_153000/` with files such as `encoder.log`,
+  `prefill_decode.log`, `prefill.log`, `decode.log`, `proxy.log`, `kv.log`,
+  and `sm.log` depending on the topology/profile.
 - The old example scripts are preserved as compatibility wrappers and now route
   into this launcher.

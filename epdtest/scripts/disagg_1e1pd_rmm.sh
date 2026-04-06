@@ -39,10 +39,12 @@ ulimit -n "${ULIMIT_NOFILE:-65535}" >/dev/null 2>&1 || true
 GIT_ROOT=$(git rev-parse --show-toplevel)
 
 START_TIME=$(date +"%Y%m%d_%H%M%S")
-ENC_LOG=$LOG_PATH/encoder_${START_TIME}.log
-PD_LOG=$LOG_PATH/pd_${START_TIME}.log
-PROXY_LOG=$LOG_PATH/proxy_${START_TIME}.log
-PROFILE_LOG_DIR="${PROFILE_LOG_DIR:-$LOG_PATH/profiler_${START_TIME}}"
+RUN_DIR="${RUN_DIR:-$LOG_PATH/$START_TIME}"
+mkdir -p "$RUN_DIR"
+ENC_LOG="$RUN_DIR/encoder.log"
+PD_LOG="$RUN_DIR/prefill_decode.log"
+PROXY_LOG="$RUN_DIR/proxy.log"
+PROFILE_LOG_DIR="${PROFILE_LOG_DIR:-$RUN_DIR/profiler}"
 
 wait_for_server() {
     local port=$1
@@ -245,8 +247,8 @@ PIDS+=($!)
 
 wait_for_server "$PROXY_PORT"
 
-KV_LOG=$LOG_PATH/kv_${START_TIME}.log
-SM_LOG=$LOG_PATH/sm_${START_TIME}.log
+KV_LOG="$RUN_DIR/kv.log"
+SM_LOG="$RUN_DIR/sm.log"
 
 echo "timestamp,encoder_kv_cache_usage,prefill_decode_kv_cache_usage" > "$KV_LOG"
 echo "timestamp,role,gpu_index,sm_utilization_pct,memory_utilization_pct,memory_used_mib,power_draw_watts" > "$SM_LOG"

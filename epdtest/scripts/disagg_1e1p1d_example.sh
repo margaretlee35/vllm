@@ -42,10 +42,12 @@ ulimit -n "${ULIMIT_NOFILE:-65535}" >/dev/null 2>&1 || true
 GIT_ROOT=$(git rev-parse --show-toplevel)
 
 START_TIME=$(date +"%Y%m%d_%H%M%S")
-ENC_LOG=$LOG_PATH/encoder_${START_TIME}.log
-P_LOG=$LOG_PATH/p_${START_TIME}.log
-D_LOG=$LOG_PATH/d_${START_TIME}.log
-PROXY_LOG=$LOG_PATH/proxy_${START_TIME}.log
+RUN_DIR="${RUN_DIR:-$LOG_PATH/$START_TIME}"
+mkdir -p "$RUN_DIR"
+ENC_LOG="$RUN_DIR/encoder.log"
+P_LOG="$RUN_DIR/prefill.log"
+D_LOG="$RUN_DIR/decode.log"
+PROXY_LOG="$RUN_DIR/proxy.log"
 
 wait_for_server() {
     local port=$1
