@@ -30,6 +30,7 @@ Enable the heavier `randommm` flow:
 ```bash
 bash epdtest/run.sh --profile randommm
 bash epdtest/run.sh --topology 1e1p1d --profile randommm
+bash epdtest/run.sh --profile randommm --images-per-req-list "1 2 4"
 ```
 
 Skip install when you already have the environment ready:
@@ -45,6 +46,14 @@ GPU_E=0 GPU_PD=1 NUM_PROMPTS=50 bash epdtest/run.sh
 TOPOLOGY=1e1p1d PROFILE=randommm GPU_E=0 GPU_P=1 GPU_D=2 bash epdtest/run.sh
 MODEL=Qwen/Qwen2.5-VL-3B-Instruct LOG_PATH=/tmp/epdtest_logs bash epdtest/run.sh
 PROFILE=randommm IMAGES_PER_REQ_LIST="1 2 4 8" bash epdtest/run.sh
+```
+
+VisionZip and `randommm` sweep arguments are also available directly on the
+launcher:
+
+```bash
+bash epdtest/run.sh --vision-zip-rate 0.5 --vision-zip-dominant-ratio 0.75 --vision-zip-attention-layer -2
+bash epdtest/run.sh --profile randommm --images-per-req-list "1 2 4 8"
 ```
 
 ## Slurm
@@ -89,28 +98,10 @@ Sweep a smaller set of image counts:
 sbatch --export=ALL,SKIP_INSTALL=1,IMAGES_PER_REQ_LIST="1 2 4" epdtest/epd.slurm
 ```
 
-Run a quick smoke benchmark:
-
-```bash
-sbatch --export=ALL,SKIP_INSTALL=1,NUM_PROMPTS=20,TIMEOUT_SECONDS=300 epdtest/epd.slurm
-```
-
-Override the model:
-
-```bash
-sbatch --export=ALL,SKIP_INSTALL=1,MODEL="Qwen/Qwen2.5-VL-3B-Instruct" epdtest/epd.slurm
-```
-
 Override VisionZip settings:
 
 ```bash
 sbatch --export=ALL,SKIP_INSTALL=1,VISION_ZIP_RATE=0.5,VISION_ZIP_DOMINANT_RATIO=0.75,VISION_ZIP_ATTENTION_LAYER=-2 epdtest/epd.slurm
-```
-
-Write logs somewhere else:
-
-```bash
-sbatch --export=ALL,SKIP_INSTALL=1,LOG_PATH=/scratch/$USER/epdtest_logs epdtest/epd.slurm
 ```
 
 The main variables to override are now consumed by `run.sh`:

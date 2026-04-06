@@ -25,6 +25,10 @@ Usage:
 Options:
   --topology 1e1pd|1e1p1d
   --profile simple|randommm
+  --images-per-req-list "1 2 4 8"
+  --vision-zip-rate FLOAT
+  --vision-zip-dominant-ratio FLOAT
+  --vision-zip-attention-layer INT
   --skip-install
   -h, --help
 
@@ -32,12 +36,14 @@ Examples:
   bash epdtest/run.sh
   bash epdtest/run.sh --profile randommm
   bash epdtest/run.sh --topology 1e1p1d --profile randommm
+  bash epdtest/run.sh --profile randommm --images-per-req-list "1 2 4"
+  bash epdtest/run.sh --vision-zip-rate 0.5 --vision-zip-dominant-ratio 0.75
   bash epdtest/run.sh --skip-install
 
 Notes:
   - This is the main epdtest entrypoint.
   - The old scripts under examples/.../lovelace are preserved only as wrappers.
-  - Model, log path, and image sweep stay configurable through environment variables.
+  - Model and log path still stay configurable through environment variables.
 EOF
 }
 
@@ -49,6 +55,22 @@ while [[ $# -gt 0 ]]; do
             ;;
         --profile)
             PROFILE="$2"
+            shift 2
+            ;;
+        --images-per-req-list)
+            IMAGES_PER_REQ_LIST="$2"
+            shift 2
+            ;;
+        --vision-zip-rate)
+            export VISION_ZIP_RATE="$2"
+            shift 2
+            ;;
+        --vision-zip-dominant-ratio)
+            export VISION_ZIP_DOMINANT_RATIO="$2"
+            shift 2
+            ;;
+        --vision-zip-attention-layer)
+            export VISION_ZIP_ATTENTION_LAYER="$2"
             shift 2
             ;;
         --skip-install)
@@ -180,8 +202,20 @@ run_once() {
     echo "  profile        : $PROFILE"
     echo "  model          : $MODEL"
     echo "  log_path       : ${LOG_PATH#$GIT_ROOT/}"
+    if [[ "$PROFILE" == "randommm" ]]; then
+        echo "  image sweep    : $IMAGES_PER_REQ_LIST"
+    fi
     if [[ -n "${IMAGES_PER_REQ:-}" ]]; then
         echo "  images_per_req : $IMAGES_PER_REQ"
+    fi
+    if [[ -n "${VISION_ZIP_RATE:-}" ]]; then
+        echo "  vz_rate        : $VISION_ZIP_RATE"
+    fi
+    if [[ -n "${VISION_ZIP_DOMINANT_RATIO:-}" ]]; then
+        echo "  vz_dom_ratio   : $VISION_ZIP_DOMINANT_RATIO"
+    fi
+    if [[ -n "${VISION_ZIP_ATTENTION_LAYER:-}" ]]; then
+        echo "  vz_attn_layer  : $VISION_ZIP_ATTENTION_LAYER"
     fi
     echo "  script         : ${TARGET_SCRIPT#$GIT_ROOT/}"
 
