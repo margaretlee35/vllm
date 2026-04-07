@@ -27,7 +27,7 @@ Options:
   --profile simple|randommm
   --images-per-req N
   --visual-token-pruning-method vision_zip|cdpruner
-  --vision-zip-rate FLOAT
+  --visual-token-pruning-rate FLOAT
   --vision-zip-dominant-ratio FLOAT
   --vision-zip-attention-layer INT
   --skip-install
@@ -38,7 +38,7 @@ Examples:
   bash epdtest/run.sh --profile randommm
   bash epdtest/run.sh --topology 1e1p1d --profile randommm
   bash epdtest/run.sh --profile randommm --images-per-req 4
-  bash epdtest/run.sh --visual-token-pruning-method vision_zip --vision-zip-rate 0.5
+  bash epdtest/run.sh --visual-token-pruning-method vision_zip --visual-token-pruning-rate 0.5
   bash epdtest/run.sh --skip-install
 
 Notes:
@@ -66,8 +66,8 @@ while [[ $# -gt 0 ]]; do
             export VISUAL_TOKEN_PRUNING_METHOD="$2"
             shift 2
             ;;
-        --vision-zip-rate)
-            export VISION_ZIP_RATE="$2"
+        --visual-token-pruning-rate)
+            export VISUAL_TOKEN_PRUNING_RATE="$2"
             shift 2
             ;;
         --vision-zip-dominant-ratio)
@@ -133,8 +133,8 @@ if [[ -z "${TIMEOUT_SECONDS:-}" ]]; then
 fi
 
 if [[ "${VISUAL_TOKEN_PRUNING_METHOD:-}" == "vision_zip" ]]; then
-    if [[ -z "${VISION_ZIP_RATE:-}" && -z "${VISUAL_TOKEN_PRUNING_RATE:-}" ]]; then
-        export VISION_ZIP_RATE=0.5
+    if [[ -z "${VISUAL_TOKEN_PRUNING_RATE:-}" ]]; then
+        export VISUAL_TOKEN_PRUNING_RATE=0.5
     fi
     if [[ -z "${VISION_ZIP_DOMINANT_RATIO:-}" ]]; then
         export VISION_ZIP_DOMINANT_RATIO=0.75
@@ -216,8 +216,8 @@ fi
 if [[ "$PROFILE" == "randommm" ]]; then
     echo "  images_per_req : $IMAGES_PER_REQ"
 fi
-if [[ -n "${VISION_ZIP_RATE:-}" ]]; then
-    echo "  vz_rate        : $VISION_ZIP_RATE"
+if [[ -n "${VISUAL_TOKEN_PRUNING_RATE:-}" ]]; then
+    echo "  vt_rate        : $VISUAL_TOKEN_PRUNING_RATE"
 fi
 if [[ -n "${VISION_ZIP_DOMINANT_RATIO:-}" ]]; then
     echo "  vz_dom_ratio   : $VISION_ZIP_DOMINANT_RATIO"

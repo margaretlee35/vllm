@@ -4,9 +4,9 @@ set -euo pipefail
 usage() {
     cat <<'EOF'
 Usage:
-  bash epdtest/run_all.sh visionzip
-  bash epdtest/run_all.sh cdprune
-  bash epdtest/run_all.sh noprune
+  bash epdtest/sweep.sh visionzip
+  bash epdtest/sweep.sh cdprune
+  bash epdtest/sweep.sh noprune
 
 Accepted method aliases:
   visionzip | vision_zip
@@ -88,17 +88,26 @@ if [[ "$PRUNE_MODE" == "noprune" ]]; then
 else
     echo "epdtest: visual_token_pruning_method=$VISUAL_TOKEN_PRUNING_METHOD"
 fi
-echo "epdtest: images_per_req=$IMAGES_PER_REQ_LIST"
 
-for images_per_req in $IMAGES_PER_REQ_LIST; do
-    export IMAGES_PER_REQ="$images_per_req"
+if [[ "$PROFILE" == "randommm" ]]; then
+    echo "epdtest: images_per_req=$IMAGES_PER_REQ_LIST"
+    for images_per_req in $IMAGES_PER_REQ_LIST; do
+        export IMAGES_PER_REQ="$images_per_req"
+        export RUN_STAMP
+        export RUN_DIR="${LOG_PATH}/${RUN_STAMP}/ipr${images_per_req}"
+        mkdir -p "$RUN_DIR"
+
+        echo "=== IMAGES_PER_REQ=$IMAGES_PER_REQ ==="
+        bash ./epdtest/run.sh \
+            "${BASE_RUN_ARGS[@]}" \
+            --images-per-req "$IMAGES_PER_REQ" \
+            2>&1
+    done
+else
     export RUN_STAMP
-    export RUN_DIR="${LOG_PATH}/${RUN_STAMP}/ipr${images_per_req}"
+    export RUN_DIR="${LOG_PATH}/${RUN_STAMP}"
     mkdir -p "$RUN_DIR"
 
-    echo "=== IMAGES_PER_REQ=$IMAGES_PER_REQ ==="
-    bash ./epdtest/run.sh \
-        "${BASE_RUN_ARGS[@]}" \
-        --images-per-req "$IMAGES_PER_REQ" \
-        2>&1
-done
+    echo "=== single run ==="
+    bash ./epdtest/run.sh "${BASE_RUN_ARGS[@]}" 2>&1
+fi

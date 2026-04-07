@@ -13,14 +13,14 @@ set -euo pipefail
 #
 # Examples:
 #   # Single method via positional arg
-#   bash ./epdtest/lmms_eval.sh visionzip
-#   bash ./epdtest/lmms_eval.sh noprune
+#   bash ./epdtest/eval_lmms.sh visionzip
+#   bash ./epdtest/eval_lmms.sh noprune
 #
 #   # Baseline vs VisionZip
-#   METHODS="noprune visionzip" bash ./epdtest/lmms_eval.sh
+#   METHODS="noprune visionzip" bash ./epdtest/eval_lmms.sh
 #
 #   # VisionZip only with custom prune rate
-#   METHODS="visionzip" VISUAL_TOKEN_PRUNING_RATE=0.4 bash ./epdtest/lmms_eval.sh
+#   METHODS="visionzip" VISUAL_TOKEN_PRUNING_RATE=0.4 bash ./epdtest/eval_lmms.sh
 
 declare -a PIDS=()
 
@@ -393,13 +393,13 @@ PY
 usage() {
     cat <<'EOF'
 Usage:
-  bash epdtest/lmms_eval.sh [method ...]
+  bash epdtest/eval_lmms.sh [method ...]
 
 Examples:
-  bash epdtest/lmms_eval.sh visionzip
-  bash epdtest/lmms_eval.sh noprune
-  bash epdtest/lmms_eval.sh noprune visionzip
-  METHODS="noprune visionzip" bash epdtest/lmms_eval.sh
+  bash epdtest/eval_lmms.sh visionzip
+  bash epdtest/eval_lmms.sh noprune
+  bash epdtest/eval_lmms.sh noprune visionzip
+  METHODS="noprune visionzip" bash epdtest/eval_lmms.sh
 
 Methods:
   noprune (aliases: baseline, none, dense)
@@ -430,7 +430,7 @@ echo "  VLLM_LIMIT_MM_PER_PROMPT=$VLLM_LIMIT_MM_PER_PROMPT"
 
 read -r -a METHOD_LIST <<< "${METHODS}"
 if [[ ${#METHOD_LIST[@]} -eq 0 || -z "${METHOD_LIST[0]:-}" ]]; then
-    echo "METHODS is empty. Example: METHODS='noprune visionzip' bash ./epdtest/lmms_eval.sh" >&2
+    echo "METHODS is empty. Example: METHODS='noprune visionzip' bash ./epdtest/eval_lmms.sh" >&2
     exit 2
 fi
 idx=0

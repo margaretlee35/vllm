@@ -8,7 +8,7 @@ Use this instead of remembering which legacy wrapper lives under
 `epdtest/run.sh` is the single-run entrypoint. It chooses the topology/profile
 script, activates `.venv` when present, and runs one configuration once.
 
-`epdtest/run_all.sh` is the outer sweep wrapper. It is the right entrypoint for
+`epdtest/sweep.sh` is the outer sweep wrapper. It is the right entrypoint for
 `randommm` image-count sweeps and prune-mode batches.
 
 ## Quick Start
@@ -46,30 +46,31 @@ All existing environment overrides still work:
 GPU_E=0 GPU_PD=1 NUM_PROMPTS=50 bash epdtest/run.sh
 TOPOLOGY=1e1p1d PROFILE=randommm GPU_E=0 GPU_P=1 GPU_D=2 bash epdtest/run.sh
 MODEL=Qwen/Qwen2.5-VL-3B-Instruct LOG_PATH=/tmp/epdtest_logs bash epdtest/run.sh
-PROFILE=randommm IMAGES_PER_REQ_LIST="1 2 4 8" bash epdtest/run.sh
+PROFILE=randommm IMAGES_PER_REQ=4 bash epdtest/run.sh
 ```
 
 VisionZip arguments are also available directly on the launcher:
 
 ```bash
-bash epdtest/run.sh --visual-token-pruning-method vision_zip --vision-zip-rate 0.5 --vision-zip-dominant-ratio 0.75 --vision-zip-attention-layer -2
+bash epdtest/run.sh --visual-token-pruning-method vision_zip --visual-token-pruning-rate 0.5 --vision-zip-dominant-ratio 0.75 --vision-zip-attention-layer -2
 ```
 
 Visual token pruning is not enabled by default anymore. To turn it on, pass an
 explicit pruning method such as `--visual-token-pruning-method vision_zip`.
 
-Use `run_all.sh` for outer sweeps:
+Use `sweep.sh` for outer sweeps:
 
 ```bash
-bash epdtest/run_all.sh noprune
-bash epdtest/run_all.sh visionzip
-IMAGES_PER_REQ_LIST="1 2 4 8" bash epdtest/run_all.sh cdprune
+bash epdtest/sweep.sh noprune
+bash epdtest/sweep.sh visionzip
+IMAGES_PER_REQ_LIST="1 2 4 8" bash epdtest/sweep.sh cdprune
+PROFILE=simple bash epdtest/sweep.sh noprune
 ```
 
 ## Slurm
 
 `epdtest/epd.slurm` is intentionally minimal now. It just exports the requested
-topology/profile/prune mode and calls `epdtest/run_all.sh`.
+topology/profile/prune mode and calls `epdtest/sweep.sh`.
 
 Default batch run:
 
@@ -116,23 +117,24 @@ sbatch --export=ALL,SKIP_INSTALL=1,IMAGES_PER_REQ_LIST="1 2 4" epdtest/epd.slurm
 Override VisionZip settings:
 
 ```bash
-sbatch --export=ALL,SKIP_INSTALL=1,VISION_ZIP_RATE=0.5,VISION_ZIP_DOMINANT_RATIO=0.75,VISION_ZIP_ATTENTION_LAYER=-2 epdtest/epd.slurm
+sbatch --export=ALL,SKIP_INSTALL=1,VISUAL_TOKEN_PRUNING_RATE=0.5,VISION_ZIP_DOMINANT_RATIO=0.75,VISION_ZIP_ATTENTION_LAYER=-2 epdtest/epd.slurm
 ```
 
-The main variables to override are now consumed by `run.sh` or `run_all.sh`:
+The main variables to override are now consumed by `run.sh` or `sweep.sh`:
 
 - `TOPOLOGY`: `1e1pd` or `1e1p1d`
 - `PROFILE`: `simple` or `randommm`
-- `PRUNE_MODE`: `noprune`, `visionzip`, or `cdprune` for `run_all.sh` / slurm
+- `PRUNE_MODE`: `noprune`, `visionzip`, or `cdprune` for `sweep.sh` / slurm
 - `MODEL`: VLM to serve
 - `LOG_PATH`: output directory for launcher-owned logs
 - `IMAGES_PER_REQ`: single-run image count for `run.sh`
-- `IMAGES_PER_REQ_LIST`: space-separated sweep values for `run_all.sh`
+- `IMAGES_PER_REQ_LIST`: space-separated sweep values for `sweep.sh` when `PROFILE=randommm`
 - `SKIP_INSTALL`: set to `1` to skip the default install
 - `VISUAL_TOKEN_PRUNING_METHOD`: optional explicit pruning method
+- `VISUAL_TOKEN_PRUNING_RATE`: canonical pruning-rate override
 - `GPU_E`, `GPU_PD`, `GPU_P`, `GPU_D`: GPU assignment
 - `NUM_PROMPTS`: benchmark request count
-- `VISION_ZIP_RATE`, `VISION_ZIP_DOMINANT_RATIO`, `VISION_ZIP_ATTENTION_LAYER`: VisionZip tuning
+- `VISION_ZIP_DOMINANT_RATIO`, `VISION_ZIP_ATTENTION_LAYER`: VisionZip-specific tuning
 
 ## Notes
 

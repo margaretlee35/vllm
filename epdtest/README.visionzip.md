@@ -1,8 +1,8 @@
 # VisionZip vs NoPrune EPD Benchmark Results
 
 This file compares all 8 runs:
-- VisionZip batch: `20260406_020517` (`bash epdtest/run_all.sh visionzip`)
-- NoPrune batch: `20260406_021822` (`bash epdtest/run_all.sh noprune`)
+- VisionZip batch: `20260406_020517` (`bash epdtest/sweep.sh visionzip`)
+- NoPrune batch: `20260406_021822` (`bash epdtest/sweep.sh noprune`)
 - topology/profile: `1e1pd / metrics`
 - prompts per run: `500`
 - dataset mode: `random-mm`
@@ -40,8 +40,8 @@ This file compares all 8 runs:
 ## LMMS-Eval (MMMU Val, limit=300)
 
 Runs:
-- `bash epdtest/lmms_eval.sh noprune`
-- `bash epdtest/lmms_eval.sh visionzip`
+- `bash epdtest/eval_lmms.sh noprune`
+- `bash epdtest/eval_lmms.sh visionzip`
 
 | Method | MMMU Acc | Input Tokens | Output Tokens | Total Tokens | API Calls | Eval Elapsed (s) | Avg Speed (tok/s) |
 |---|---:|---:|---:|---:|---:|---:|---:|

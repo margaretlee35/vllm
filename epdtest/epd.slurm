@@ -19,4 +19,4 @@ export TOPOLOGY="${TOPOLOGY:-1e1pd}"
 export PROFILE="${PROFILE:-randommm}"
 export PRUNE_MODE="${PRUNE_MODE:-noprune}"
 
-bash ./epdtest/run_all.sh "$PRUNE_MODE"
+bash ./epdtest/sweep.sh "$PRUNE_MODE"
