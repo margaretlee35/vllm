@@ -1,10 +1,12 @@
 #!/bin/bash
 set -euo pipefail
 
-UTIL_DIR="/home/margaretlee35/work/vllm/epdtest/logs/utilization"
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+LOGS_DIR=$(cd -- "${SCRIPT_DIR}/.." && pwd)
+UTIL_DIR="${SCRIPT_DIR}"
 PLOT_SCRIPT="${UTIL_DIR}/plot_gpu_utilization.py"
 PYTHON_BIN="${PYTHON_BIN:-python}"
-LOG_ROOT="${LOG_ROOT:-/home/margaretlee35/work/vllm/epdtest/logs}"
+LOG_ROOT="${LOG_ROOT:-${LOGS_DIR}}"
 
 mapfile -t files < <(find "${LOG_ROOT}" -path "${UTIL_DIR}" -prune -o -name sm.log -type f -print | sort)
 
