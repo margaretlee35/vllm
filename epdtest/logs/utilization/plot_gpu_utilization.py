@@ -23,7 +23,6 @@ def parse_args():
     parser.add_argument(
         "-o",
         "--output",
-        required=True,
         help="Path to the output image file.",
     )
     parser.add_argument(
@@ -47,6 +46,9 @@ def parse_args():
 
 
 def load_log(input_path: Path) -> pd.DataFrame:
+    if input_path.is_dir():
+        input_path = input_path / "sm.log"
+
     df = pd.read_csv(input_path)
     required_columns = {"timestamp", "role", *METRIC_COLUMNS.keys()}
     missing = sorted(required_columns - set(df.columns))
@@ -108,7 +110,11 @@ def plot_role_metric(ax, role_df: pd.DataFrame, role: str, metric: str, ylabel: 
 def main():
     args = parse_args()
     input_path = Path(args.input_log)
-    output_path = Path(args.output)
+    if input_path.is_dir():
+        default_output = input_path / f"sm_{args.role}.png"
+    else:
+        default_output = input_path.with_name(f"{input_path.stem}_{args.role}.png")
+    output_path = Path(args.output) if args.output else default_output
 
     df = load_log(input_path)
     role = args.role
