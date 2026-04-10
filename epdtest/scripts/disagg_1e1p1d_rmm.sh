@@ -184,19 +184,6 @@ PIDS+=($!)
 
 wait_for_server "$PROXY_PORT"
 
-KV_LOG="$RUN_DIR/kv.log"
-(
-  while true; do
-    ts=$(date +%s)
-    enc=$(curl -s "http://127.0.0.1:${ENCODE_PORT}/metrics" | awk '/vllm:kv_cache_usage_perc/ {print $NF; exit}')
-    prefill=$(curl -s "http://127.0.0.1:${PREFILL_PORT}/metrics" | awk '/vllm:kv_cache_usage_perc/ {print $NF; exit}')
-    decode=$(curl -s "http://127.0.0.1:${DECODE_PORT}/metrics" | awk '/vllm:kv_cache_usage_perc/ {print $NF; exit}')
-    echo "$ts,$enc,$prefill,$decode" >> "$KV_LOG"
-    sleep 1
-  done
-) &
-PIDS+=($!)
-
 vllm bench serve \
     --model "$MODEL" \
     --backend openai-chat \

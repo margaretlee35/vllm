@@ -55,17 +55,6 @@ wait_for_server() {
         done" && return 0 || return 1
 }
 
-scrape_kv_cache_usage() {
-    local port=$1
-    local response
-    response=$(curl -fsS "http://127.0.0.1:${port}/metrics" 2>/dev/null || true)
-    if [[ -z "$response" ]]; then
-        echo "NA"
-        return 0
-    fi
-    awk '$1 == "vllm:kv_cache_usage_perc" {print $NF; found=1; exit} END {if (!found) print "NA"}' <<< "$response"
-}
-
 log_gpu_sm_utilization() {
     local ts=$1
     local output
@@ -251,18 +240,13 @@ PIDS+=($!)
 
 wait_for_server "$PROXY_PORT"
 
-KV_LOG="$RUN_DIR/kv.log"
 SM_LOG="$RUN_DIR/sm.log"
 
-echo "timestamp,encoder_kv_cache_usage,prefill_decode_kv_cache_usage" > "$KV_LOG"
 echo "timestamp,role,gpu_index,sm_utilization_pct,memory_utilization_pct,memory_used_mib,power_draw_watts" > "$SM_LOG"
 
 (
   while true; do
     ts=$(date +%s)
-    enc=$(scrape_kv_cache_usage "$ENCODE_PORT")
-    pd=$(scrape_kv_cache_usage "$PREFILL_DECODE_PORT")
-    echo "$ts,$enc,$pd" >> "$KV_LOG"
     log_gpu_sm_utilization "$ts"
     sleep "$METRICS_SAMPLING_INTERVAL_SECONDS"
   done

@@ -143,7 +143,7 @@ The main variables to override are now consumed by `run.sh` or `sweep.sh`:
   `epdtest/logs/20260405_153000/`. For `randommm` sweeps, each item lands under
   a nested directory like `epdtest/logs/20260405_153000/ipr1/`. Inside those
   folders you will see files such as `encoder.log`, `prefill_decode.log`,
-  `prefill.log`, `decode.log`, `proxy.log`, `kv.log`, `sm.log`, and
+  `prefill.log`, `decode.log`, `proxy.log`, `sm.log`, and
   `target_script.log` depending on the topology/profile.
 - The old example scripts are preserved as compatibility wrappers and now route
   into this launcher.
