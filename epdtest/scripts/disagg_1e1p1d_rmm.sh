@@ -143,8 +143,12 @@ vllm serve "$MODEL" \
             "shared_storage_path": "'"$EC_SHARED_STORAGE_PATH"'"
         }
     }' \
+    #--kv-transfer-config '{
+    #    "kv_connector": "NixlConnector",
+    #    "kv_role": "kv_producer"
+    #}' \
     --kv-transfer-config '{
-        "kv_connector": "NixlConnector",
+        "kv_connector": "PyNcclConnector",
         "kv_role": "kv_producer"
     }' \
     "${VISION_ZIP_ARGS[@]}" \
@@ -161,8 +165,12 @@ vllm serve "$MODEL" \
     --max-num-batched-tokens "$PD_MAX_NUM_BATCHED_TOKENS" \
     --max-num-seqs "$PD_MAX_NUM_SEQS" \
     --allowed-local-media-path "${GIT_ROOT}"/tests/v1/ec_connector/integration \
+    #--kv-transfer-config '{
+    #    "kv_connector": "NixlConnector",
+    #    "kv_role": "kv_consumer"
+    #}' \
     --kv-transfer-config '{
-        "kv_connector": "NixlConnector",
+        "kv_connector": "PyNcclConnector",
         "kv_role": "kv_consumer"
     }' \
     "${VISION_ZIP_ARGS[@]}" \
