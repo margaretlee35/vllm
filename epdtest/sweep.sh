@@ -52,8 +52,8 @@ export MODEL="${MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}"
 
 export GPU_E="${GPU_E:-0}"
 export GPU_PD="${GPU_PD:-1}"
-export GPU_P="${GPU_P:-0}"
-export GPU_D="${GPU_D:-1}"
+export GPU_P="${GPU_P:-1}"
+export GPU_D="${GPU_D:-2}"
 
 export NUM_PROMPTS="${NUM_PROMPTS:-500}"
 export TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-120}"
