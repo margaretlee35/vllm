@@ -1,11 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 
+# Shared 1e1pd runner for both BENCHMARK=simple and BENCHMARK=randommm.
+
 declare -a PIDS=()
 
 MODEL="${MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}"
 LOG_PATH="${LOG_PATH:-./epdtest/logs}"
 mkdir -p "$LOG_PATH"
+BENCHMARK="${BENCHMARK:-randommm}"
 
 ENCODE_PORT="${ENCODE_PORT:-19534}"
 PREFILL_DECODE_PORT="${PREFILL_DECODE_PORT:-19535}"
@@ -17,23 +20,34 @@ GPU_PD="${GPU_PD:-1}"
 EC_SHARED_STORAGE_PATH="${EC_SHARED_STORAGE_PATH:-/tmp/ec_cache}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-12000}"
 
-NUM_PROMPTS="${NUM_PROMPTS:-500}"
+NUM_PROMPTS="${NUM_PROMPTS:-300}"
 PD_GPU_MEMORY_UTILIZATION="${PD_GPU_MEMORY_UTILIZATION:-0.85}"
 PD_MAX_MODEL_LEN="${PD_MAX_MODEL_LEN:-65536}"
 PD_MAX_NUM_BATCHED_TOKENS="${PD_MAX_NUM_BATCHED_TOKENS:-32768}"
 PD_MAX_NUM_SEQS="${PD_MAX_NUM_SEQS:-32}"
 BENCH_REQUEST_RATE="${BENCH_REQUEST_RATE:-32}"
 BENCH_MAX_CONCURRENCY="${BENCH_MAX_CONCURRENCY:-32}"
+ENCODER_GPU_MEMORY_UTILIZATION="${ENCODER_GPU_MEMORY_UTILIZATION:-0.05}"
 VISUAL_TOKEN_PRUNING_METHOD="${VISUAL_TOKEN_PRUNING_METHOD:-}"
 VISUAL_TOKEN_PRUNING_RATE="${VISUAL_TOKEN_PRUNING_RATE:-}"
 VISION_ZIP_DOMINANT_RATIO="${VISION_ZIP_DOMINANT_RATIO:-}"
 VISION_ZIP_ATTENTION_LAYER="${VISION_ZIP_ATTENTION_LAYER:-}"
 IMAGES_PER_REQ="${IMAGES_PER_REQ:-1}"
+HF_DATASET_PATH="${HF_DATASET_PATH:-lmarena-ai/VisionArena-Chat}"
 METRICS_SAMPLING_INTERVAL_SECONDS="${METRICS_SAMPLING_INTERVAL_SECONDS:-1}"
 GPU_PROFILER="${GPU_PROFILER:-none}"
 NSYS_ENABLE_GPU_METRICS="${NSYS_ENABLE_GPU_METRICS:-1}"
 NSYS_GPU_METRICS_DEVICES="${NSYS_GPU_METRICS_DEVICES:-$GPU_E,$GPU_PD}"
 NSYS_GPU_METRICS_FREQUENCY="${NSYS_GPU_METRICS_FREQUENCY:-1000}"
+
+case "${BENCHMARK,,}" in
+    simple|randommm)
+        ;;
+    *)
+        echo "Unsupported BENCHMARK: $BENCHMARK (expected simple or randommm)" >&2
+        exit 1
+        ;;
+esac
 
 ulimit -n "${ULIMIT_NOFILE:-65535}" >/dev/null 2>&1 || true
 
@@ -53,17 +67,6 @@ wait_for_server() {
         until curl -s localhost:$port/v1/chat/completions > /dev/null; do
             sleep 1
         done" && return 0 || return 1
-}
-
-scrape_kv_cache_usage() {
-    local port=$1
-    local response
-    response=$(curl -fsS "http://127.0.0.1:${port}/metrics" 2>/dev/null || true)
-    if [[ -z "$response" ]]; then
-        echo "NA"
-        return 0
-    fi
-    awk '$1 == "vllm:kv_cache_usage_perc" {print $NF; found=1; exit} END {if (!found) print "NA"}' <<< "$response"
 }
 
 log_gpu_sm_utilization() {
@@ -185,23 +188,40 @@ validate_profiler
 rm -rf "$EC_SHARED_STORAGE_PATH"
 mkdir -p "$EC_SHARED_STORAGE_PATH"
 
+CANONICAL_VISUAL_TOKEN_PRUNING_METHOD="${VISUAL_TOKEN_PRUNING_METHOD,,}"
+VLLM_VISUAL_TOKEN_PRUNING_METHOD=""
+case "$CANONICAL_VISUAL_TOKEN_PRUNING_METHOD" in
+    ""|none)
+        ;;
+    visionzip)
+        VLLM_VISUAL_TOKEN_PRUNING_METHOD="vision_zip"
+        ;;
+    cdpruner)
+        VLLM_VISUAL_TOKEN_PRUNING_METHOD="cdpruner"
+        ;;
+    *)
+        echo "Unsupported VISUAL_TOKEN_PRUNING_METHOD: ${VISUAL_TOKEN_PRUNING_METHOD} (expected visionzip, cdpruner, or none)" >&2
+        exit 1
+        ;;
+esac
+
 declare -a VISION_ZIP_ARGS=()
-if [[ -n "${VISUAL_TOKEN_PRUNING_METHOD:-}" ]]; then
-    VISION_ZIP_ARGS+=(--visual-token-pruning-method "$VISUAL_TOKEN_PRUNING_METHOD")
+if [[ -n "$VLLM_VISUAL_TOKEN_PRUNING_METHOD" ]]; then
+    VISION_ZIP_ARGS+=(--visual-token-pruning-method "$VLLM_VISUAL_TOKEN_PRUNING_METHOD")
 fi
 if [[ -n "${VISUAL_TOKEN_PRUNING_RATE:-}" ]]; then
     VISION_ZIP_ARGS+=(--vt-prune-rate "$VISUAL_TOKEN_PRUNING_RATE")
 fi
-if [[ "${VISUAL_TOKEN_PRUNING_METHOD:-}" == "vision_zip" && -n "${VISION_ZIP_DOMINANT_RATIO:-}" ]]; then
+if [[ "$CANONICAL_VISUAL_TOKEN_PRUNING_METHOD" == "visionzip" && -n "${VISION_ZIP_DOMINANT_RATIO:-}" ]]; then
     VISION_ZIP_ARGS+=(--vision-zip-dominant-ratio "$VISION_ZIP_DOMINANT_RATIO")
 fi
-if [[ "${VISUAL_TOKEN_PRUNING_METHOD:-}" == "vision_zip" && -n "${VISION_ZIP_ATTENTION_LAYER:-}" ]]; then
+if [[ "$CANONICAL_VISUAL_TOKEN_PRUNING_METHOD" == "visionzip" && -n "${VISION_ZIP_ATTENTION_LAYER:-}" ]]; then
     VISION_ZIP_ARGS+=(--vision-zip-attention-layer "$VISION_ZIP_ATTENTION_LAYER")
 fi
 
 start_worker encoder "$ENC_LOG" "$GPU_E" \
     vllm serve "$MODEL" \
-    --gpu-memory-utilization 0.05 \
+    --gpu-memory-utilization "$ENCODER_GPU_MEMORY_UTILIZATION" \
     --port "$ENCODE_PORT" \
     --enforce-eager \
     --enable-request-id-headers \
@@ -251,36 +271,59 @@ PIDS+=($!)
 
 wait_for_server "$PROXY_PORT"
 
-KV_LOG="$RUN_DIR/kv.log"
 SM_LOG="$RUN_DIR/sm.log"
 
-echo "timestamp,encoder_kv_cache_usage,prefill_decode_kv_cache_usage" > "$KV_LOG"
 echo "timestamp,role,gpu_index,sm_utilization_pct,memory_utilization_pct,memory_used_mib,power_draw_watts" > "$SM_LOG"
 
 (
   while true; do
     ts=$(date +%s)
-    enc=$(scrape_kv_cache_usage "$ENCODE_PORT")
-    pd=$(scrape_kv_cache_usage "$PREFILL_DECODE_PORT")
-    echo "$ts,$enc,$pd" >> "$KV_LOG"
     log_gpu_sm_utilization "$ts"
     sleep "$METRICS_SAMPLING_INTERVAL_SECONDS"
   done
 ) &
 PIDS+=($!)
 
-vllm bench serve \
-    --model "$MODEL" \
-    --backend openai-chat \
-    --endpoint /v1/chat/completions \
-    --dataset-name random-mm \
-    --seed 0 \
-    --num-prompts "$NUM_PROMPTS" \
-    --request-rate "$BENCH_REQUEST_RATE" \
-    --max-concurrency "$BENCH_MAX_CONCURRENCY" \
-    --random-mm-base-items-per-request "${IMAGES_PER_REQ:-1}" \
-    --random-mm-num-mm-items-range-ratio 0 \
-    --random-mm-limit-mm-per-prompt "{\"image\": ${IMAGES_PER_REQ:-1}, \"video\": 0}" \
+declare -a BENCH_ARGS=(
+    --model "$MODEL"
+    --backend openai-chat
+    --endpoint /v1/chat/completions
+    --seed 0
+    --num-prompts "$NUM_PROMPTS"
+    --request-rate "$BENCH_REQUEST_RATE"
+    --max-concurrency "$BENCH_MAX_CONCURRENCY"
     --port "$PROXY_PORT"
+)
+
+if [[ "$BENCHMARK" == "randommm" ]]; then
+    BENCH_ARGS+=(
+        --dataset-name random-mm
+        --random-mm-base-items-per-request "${IMAGES_PER_REQ}"
+        --random-mm-num-mm-items-range-ratio 0
+        --random-mm-limit-mm-per-prompt "{\"image\": ${IMAGES_PER_REQ}, \"video\": 0}"
+    )
+else
+    BENCH_ARGS+=(
+        --dataset-name hf
+        --dataset-path "$HF_DATASET_PATH"
+    )
+fi
+
+vllm bench serve "${BENCH_ARGS[@]}"
+
+if [[ "$BENCHMARK" == "simple" ]]; then
+    curl http://127.0.0.1:"${PROXY_PORT}"/v1/chat/completions \
+        -H "Content-Type: application/json" \
+        -d '{
+        "model": "'"${MODEL}"'",
+        "messages": [
+        {"role": "system", "content": "You are a helpful assistant."},
+        {"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": "file://'"${GIT_ROOT}"'/tests/v1/ec_connector/integration/hato.jpg"}},
+            {"type": "text", "text": "What is in this image?"}
+        ]}
+        ]
+        }'
+fi
 
 cleanup

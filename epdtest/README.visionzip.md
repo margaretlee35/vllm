@@ -2,8 +2,8 @@
 
 This file compares all 8 runs:
 - VisionZip batch: `20260406_020517` (`bash epdtest/sweep.sh visionzip`)
-- NoPrune batch: `20260406_021822` (`bash epdtest/sweep.sh noprune`)
-- topology/profile: `1e1pd / metrics`
+- NoPrune batch: `20260406_021822` (`bash epdtest/sweep.sh none`)
+- topology/benchmark: `1e1pd / randommm`
 - prompts per run: `500`
 - dataset mode: `random-mm`
 - benchmark throttle: `request_rate=32`, `max_concurrency=32`
@@ -40,7 +40,7 @@ This file compares all 8 runs:
 ## LMMS-Eval (MMMU Val, limit=300)
 
 Runs:
-- `bash epdtest/eval_lmms.sh noprune`
+- `bash epdtest/eval_lmms.sh none`
 - `bash epdtest/eval_lmms.sh visionzip`
 
 | Method | MMMU Acc | Input Tokens | Output Tokens | Total Tokens | API Calls | Eval Elapsed (s) | Avg Speed (tok/s) |

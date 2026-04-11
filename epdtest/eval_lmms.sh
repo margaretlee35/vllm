@@ -7,17 +7,18 @@ set -euo pipefail
 # saves per-method outputs under EVAL_OUTPUT_ROOT.
 #
 # Supported METHOD names:
-#   noprune  (aliases: baseline, none, dense)
-#   visionzip (aliases: vision_zip)
-#   cdprune  (aliases: cdpruner)
+#   none
+#   visionzip
+#   cdpruner
 #
 # Examples:
 #   # Single method via positional arg
+#   bash ./epdtest/eval_lmms.sh none
 #   bash ./epdtest/eval_lmms.sh visionzip
-#   bash ./epdtest/eval_lmms.sh noprune
+#   bash ./epdtest/eval_lmms.sh cdpruner
 #
-#   # Baseline vs VisionZip
-#   METHODS="noprune visionzip" bash ./epdtest/eval_lmms.sh
+#   # VisionZip vs CDPruner
+#   METHODS="visionzip cdpruner" bash ./epdtest/eval_lmms.sh
 #
 #   # VisionZip only with custom prune rate
 #   METHODS="visionzip" VISUAL_TOKEN_PRUNING_RATE=0.4 bash ./epdtest/eval_lmms.sh
@@ -39,7 +40,7 @@ EVAL_OUTPUT_ROOT="${EVAL_OUTPUT_ROOT:-./epdtest/lmms_eval}"
 mkdir -p "$HF_HOME" "$HF_DATASETS_CACHE" "$HUGGINGFACE_HUB_CACHE" "$EVAL_OUTPUT_ROOT"
 
 # Space-separated method names in run order.
-METHODS="${METHODS:-noprune visionzip}"
+METHODS="${METHODS:-visionzip cdpruner}"
 BASE_PORT="${BASE_PORT:-19535}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-1800}"
 DEFAULT_VLLM_LIMIT_MM_PER_PROMPT='{"image": 8, "video": 1}'
@@ -88,14 +89,11 @@ START_TIME=$(date +"%Y%m%d_%H%M%S")
 # Helpers
 ###############################################################################
 normalize_method() {
-    local m
-    m=$(echo "$1" | tr '[:upper:]' '[:lower:]')
-    case "$m" in
-        baseline|none|dense|noprune) echo "noprune" ;;
-        visionzip|vision_zip) echo "vision_zip" ;;
-        cdprune|cdpruner) echo "cdpruner" ;;
+    local method="${1,,}"
+    case "$method" in
+        none|visionzip|cdpruner) echo "$method" ;;
         *)
-            echo "Unsupported METHOD '$1'. Use one of: noprune, visionzip, cdprune." >&2
+            echo "Unsupported METHOD '$1'. Use one of: none, visionzip, cdpruner." >&2
             exit 2
             ;;
     esac
@@ -168,7 +166,7 @@ verify_architecture() {
     local normalized_method="$1"
     local server_log="$2"
 
-    if [[ "$normalized_method" == "noprune" ]]; then
+    if [[ "$normalized_method" == "none" ]]; then
         return 0
     fi
 
@@ -204,9 +202,9 @@ start_vllm_server() {
     normalized_method="$(normalize_method "$method")"
 
     case "$normalized_method" in
-        noprune)
+        none)
             ;;
-        vision_zip)
+        visionzip)
             METHOD_ARGS+=(
                 --visual-token-pruning-method vision_zip
                 --vt-prune-rate "$VISUAL_TOKEN_PRUNING_RATE"
@@ -222,7 +220,7 @@ start_vllm_server() {
             ;;
     esac
 
-    if [[ "$normalized_method" != "noprune" ]]; then
+    if [[ "$normalized_method" != "none" ]]; then
         local prune_arch_json
         prune_arch_json=$(printf '{"architectures":["%s"]}' "$PRUNE_WRAPPER_ARCH")
         HF_OVERRIDES_ARGS+=(--hf-overrides "$prune_arch_json")
@@ -256,7 +254,9 @@ start_vllm_server() {
     verify_architecture "$normalized_method" "$server_log"
 
     echo "vLLM ready: method=${method} normalized=${normalized_method} port=${port}"
-    if [[ "$normalized_method" != "noprune" ]]; then
+    if [[ "$normalized_method" == "none" ]]; then
+        echo "  visual_token_pruning_method=none (disabled)"
+    else
         echo "  visual_token_pruning_method=${normalized_method} rate=${VISUAL_TOKEN_PRUNING_RATE}"
     fi
 }
@@ -396,15 +396,16 @@ Usage:
   bash epdtest/eval_lmms.sh [method ...]
 
 Examples:
+  bash epdtest/eval_lmms.sh none
   bash epdtest/eval_lmms.sh visionzip
-  bash epdtest/eval_lmms.sh noprune
-  bash epdtest/eval_lmms.sh noprune visionzip
-  METHODS="noprune visionzip" bash epdtest/eval_lmms.sh
+  bash epdtest/eval_lmms.sh cdpruner
+  bash epdtest/eval_lmms.sh none visionzip
+  METHODS="none visionzip" bash epdtest/eval_lmms.sh
 
 Methods:
-  noprune (aliases: baseline, none, dense)
-  visionzip (alias: vision_zip)
-  cdprune (alias: cdpruner)
+  none
+  visionzip
+  cdpruner
 EOF
 }
 
@@ -430,7 +431,7 @@ echo "  VLLM_LIMIT_MM_PER_PROMPT=$VLLM_LIMIT_MM_PER_PROMPT"
 
 read -r -a METHOD_LIST <<< "${METHODS}"
 if [[ ${#METHOD_LIST[@]} -eq 0 || -z "${METHOD_LIST[0]:-}" ]]; then
-    echo "METHODS is empty. Example: METHODS='noprune visionzip' bash ./epdtest/eval_lmms.sh" >&2
+    echo "METHODS is empty. Example: METHODS='none visionzip' bash ./epdtest/eval_lmms.sh" >&2
     exit 2
 fi
 idx=0
