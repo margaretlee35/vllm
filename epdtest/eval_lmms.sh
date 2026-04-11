@@ -1,28 +1,6 @@
 #!/bin/bash
 set -euo pipefail
 
-# LMMS-Eval driver for visual-token pruning accuracy comparisons on Qwen2.5-VL.
-#
-# It launches one vLLM server per method (sequentially), runs LMMS-Eval, and
-# saves per-method outputs under EVAL_OUTPUT_ROOT.
-#
-# Supported METHOD names:
-#   none
-#   visionzip
-#   cdpruner
-#
-# Examples:
-#   # Single method via positional arg
-#   bash ./epdtest/eval_lmms.sh none
-#   bash ./epdtest/eval_lmms.sh visionzip
-#   bash ./epdtest/eval_lmms.sh cdpruner
-#
-#   # VisionZip vs CDPruner
-#   METHODS="visionzip cdpruner" bash ./epdtest/eval_lmms.sh
-#
-#   # VisionZip only with custom prune rate
-#   METHODS="visionzip" VISUAL_TOKEN_PRUNING_RATE=0.4 bash ./epdtest/eval_lmms.sh
-
 declare -a PIDS=()
 
 ###############################################################################
@@ -395,17 +373,27 @@ usage() {
 Usage:
   bash epdtest/eval_lmms.sh [method ...]
 
+Options (env):
+  METHODS="none visionzip cdpruner"
+  VISUAL_TOKEN_PRUNING_RATE FLOAT
+  VISION_ZIP_DOMINANT_RATIO FLOAT
+  VISION_ZIP_ATTENTION_LAYER INT
+  LMMS_TASKS TASK_LIST
+  LMMS_LIMIT INT
+  -h, --help
+
 Examples:
   bash epdtest/eval_lmms.sh none
   bash epdtest/eval_lmms.sh visionzip
   bash epdtest/eval_lmms.sh cdpruner
   bash epdtest/eval_lmms.sh none visionzip
-  METHODS="none visionzip" bash epdtest/eval_lmms.sh
+  METHODS="visionzip cdpruner" bash epdtest/eval_lmms.sh
+  METHODS="visionzip" VISUAL_TOKEN_PRUNING_RATE=0.4 bash epdtest/eval_lmms.sh
 
-Methods:
-  none
-  visionzip
-  cdpruner
+Notes:
+  - This runs LMMS-Eval sequentially per pruning method.
+  - Supported methods: none, visionzip, cdpruner.
+  - Per-method outputs are written under EVAL_OUTPUT_ROOT.
 EOF
 }
 
