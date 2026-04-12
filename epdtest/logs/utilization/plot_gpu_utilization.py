@@ -7,14 +7,14 @@ from matplotlib.ticker import MaxNLocator
 
 
 METRIC_COLUMNS = {
-    "power_draw_watts": "Power Draw (W)",
+    "sm_utilization_pct": "SM Utilization (%)",
     "memory_utilization_pct": "Memory Utilization (%)",
 }
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Plot GPU utilization logs for one role across two utilization metrics."
+        description="Plot SM utilization for one role from an epdtest GPU utilization log."
     )
     parser.add_argument(
         "input_log",
@@ -73,14 +73,15 @@ def plot_role_metric(ax, role_df: pd.DataFrame, role: str, metric: str, ylabel: 
     x_positions = range(len(role_df))
     metric_series = role_df[metric].fillna(0)
     values = metric_series.tolist()
-    if metric == "power_draw_watts":
-        avg_series = metric_series[metric_series >= 100]
-    else:
-        avg_series = metric_series[metric_series != 0]
+    avg_series = metric_series[metric_series != 0]
     avg_value = avg_series.mean() if not avg_series.empty else 0.0
 
-    bar_color = "#F4A261" if metric == "power_draw_watts" else "#2A9D8F"
-    edge_color = "#BC6C25" if metric == "power_draw_watts" else "#1B4332"
+    if metric == "sm_utilization_pct":
+        bar_color = "#2A9D8F"
+        edge_color = "#1B4332"
+    else:
+        bar_color = "#E9C46A"
+        edge_color = "#BC6C25"
 
     ax.bar(
         x_positions,
@@ -93,12 +94,10 @@ def plot_role_metric(ax, role_df: pd.DataFrame, role: str, metric: str, ylabel: 
     )
 
     ax.set_xticks([])
-
-    avg_suffix = "W" if metric == "power_draw_watts" else "%"
-    ax.set_title(f"{role} - {ylabel} (avg: {avg_value:.1f}{avg_suffix})")
+    ax.set_title(f"{role} - {ylabel} (avg: {avg_value:.1f}%)")
     ax.set_xlabel("time")
     ax.set_ylabel(ylabel)
-    ax.set_ylim(0, 600 if metric == "power_draw_watts" else 100)
+    ax.set_ylim(0, 100)
     ax.margins(x=0.01)
     ax.yaxis.set_major_locator(MaxNLocator(nbins=5, integer=True))
     ax.grid(axis="y", linestyle="--", alpha=0.3)
@@ -126,13 +125,12 @@ def main():
             f"Available roles: {', '.join(sorted(available_roles))}"
         )
 
-    plt.style.use("seaborn-v0_8-whitegrid")
-    fig, axes = plt.subplots(1, 2, figsize=tuple(args.figsize), sharex=False)
-    fig.patch.set_facecolor("#F8F9FA")
-
     role_df = df[df["role"] == role].copy()
     role_df = role_df.sort_values("timestamp")
 
+    plt.style.use("seaborn-v0_8-whitegrid")
+    fig, axes = plt.subplots(1, 2, figsize=tuple(args.figsize), sharex=False)
+    fig.patch.set_facecolor("#F8F9FA")
     for col_idx, (metric, ylabel) in enumerate(METRIC_COLUMNS.items()):
         plot_role_metric(
             axes[col_idx],
@@ -141,7 +139,6 @@ def main():
             metric,
             ylabel,
         )
-
     if args.title:
         fig.suptitle(args.title)
         fig.tight_layout(rect=(0, 0, 1, 0.97))
