@@ -225,12 +225,8 @@ start_worker prefill "$P_LOG" "$GPU_P" \
             "shared_storage_path": "'"$EC_SHARED_STORAGE_PATH"'"
         }
     }' \
-    #--kv-transfer-config '{
-    #    "kv_connector": "NixlConnector",
-    #    "kv_role": "kv_producer"
-    #}' \
     --kv-transfer-config '{
-        "kv_connector": "PyNcclConnector",
+        "kv_connector": "NixlConnector",
         "kv_role": "kv_producer"
     }' \
     "${VISION_ZIP_ARGS[@]}"
@@ -246,12 +242,8 @@ start_worker decode "$D_LOG" "$GPU_D" \
     --max-num-batched-tokens "$PD_MAX_NUM_BATCHED_TOKENS" \
     --max-num-seqs "$PD_MAX_NUM_SEQS" \
     --allowed-local-media-path "${GIT_ROOT}"/tests/v1/ec_connector/integration \
-    #--kv-transfer-config '{
-    #    "kv_connector": "NixlConnector",
-    #    "kv_role": "kv_consumer"
-    #}' \
     --kv-transfer-config '{
-        "kv_connector": "PyNcclConnector",
+        "kv_connector": "NixlConnector",
         "kv_role": "kv_consumer"
     }' \
     "${VISION_ZIP_ARGS[@]}"
