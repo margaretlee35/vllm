@@ -79,6 +79,16 @@ port_in_use() {
     ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]${port}$"
 }
 
+start_worker() {
+    local worker_name=$1
+    local log_file=$2
+    local cuda_visible_devices=$3
+    shift 3
+
+    env CUDA_VISIBLE_DEVICES="$cuda_visible_devices" "$@" >"${log_file}" 2>&1 &
+    PIDS+=($!)
+}
+
 log_gpu_sm_utilization() {
     local ts=$1
     local output
@@ -178,7 +188,8 @@ while port_in_use "$PREFILL_NIXL_SIDE_CHANNEL_PORT" || port_in_use "$DECODE_NIXL
     DECODE_NIXL_SIDE_CHANNEL_PORT=$((DECODE_NIXL_SIDE_CHANNEL_PORT + 1))
 done
 
-CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
+start_worker encoder "$ENC_LOG" "$GPU_E" \
+    vllm serve "$MODEL" \
     --gpu-memory-utilization "$ENCODER_GPU_MEMORY_UTILIZATION" \
     --port "$ENCODE_PORT" \
     --enforce-eager \
