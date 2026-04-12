@@ -16,7 +16,7 @@ REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 cd "$REPO_ROOT"
 
 export TOPOLOGY="${TOPOLOGY:-1e1pd}"
-export PROFILE="${PROFILE:-randommm}"
-export PRUNE_MODE="${PRUNE_MODE:-noprune}"
+export BENCHMARK="${BENCHMARK:-randommm}"
+export PRUNE_MODE="${PRUNE_MODE:-none}"
 
 bash ./epdtest/sweep.sh "$PRUNE_MODE"

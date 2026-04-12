@@ -1,0 +1,13 @@
+{
+  "methods": {
+    "none": {},
+    "visionzip": {
+      "visual_token_pruning_rate": 0.5,
+      "vision_zip_dominant_ratio": 0.75,
+      "vision_zip_attention_layer": -2
+    },
+    "cdpruner": {
+      "visual_token_pruning_rate": 0.5
+    }
+  }
+}
