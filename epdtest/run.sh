@@ -92,7 +92,7 @@ Options:
   --topology 1e1pd|1e1p1d|1ed1p
   --benchmark simple|randommm
   --images-per-req N
-  --visual-token-pruning-method visionzip|cdpruner|none
+  --visual-token-pruning-method visionzip|cdpruner|divprune|none
   -h, --help
 
 Examples:

@@ -199,8 +199,11 @@ case "$CANONICAL_VISUAL_TOKEN_PRUNING_METHOD" in
     cdpruner)
         VLLM_VISUAL_TOKEN_PRUNING_METHOD="cdpruner"
         ;;
+    divprune)
+        VLLM_VISUAL_TOKEN_PRUNING_METHOD="divprune"
+        ;;
     *)
-        echo "Unsupported VISUAL_TOKEN_PRUNING_METHOD: ${VISUAL_TOKEN_PRUNING_METHOD} (expected visionzip, cdpruner, or none)" >&2
+        echo "Unsupported VISUAL_TOKEN_PRUNING_METHOD: ${VISUAL_TOKEN_PRUNING_METHOD} (expected visionzip, cdpruner, divprune, or none)" >&2
         exit 1
         ;;
 esac

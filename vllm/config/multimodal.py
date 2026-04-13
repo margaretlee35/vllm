@@ -60,7 +60,7 @@ class MultiModalDummyOptionsBuiltins(TypedDict, total=False):
 
 MMEncoderTPMode = Literal["weights", "data"]
 MMCacheType = Literal["shm", "lru"]
-VisualTokenPruningMethod = Literal["vision_zip", "cdpruner"]
+VisualTokenPruningMethod = Literal["vision_zip", "cdpruner", "divprune"]
 MMDummyOptions: TypeAlias = dict[str, BaseDummyOptions]
 """
 A dictionary containing an entry for each modality type of dummy data.
@@ -254,10 +254,13 @@ class MultiModalConfig:
             return "vision_zip"
         if method in ("cdpruner", "cdprune"):
             return "cdpruner"
+        if method in ("divprune", "div_prune"):
+            return "divprune"
 
         raise ValueError(
             "visual_token_pruning_method must be one of: "
-            "'vision_zip'/'visionzip' or 'cdpruner'/'cdprune'."
+            "'vision_zip'/'visionzip', 'cdpruner'/'cdprune', "
+            "or 'divprune'/'div_prune'."
         )
 
     @staticmethod

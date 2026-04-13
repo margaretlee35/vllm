@@ -54,7 +54,7 @@ from .qwen2_5_vl import (
 from .utils import maybe_prefix
 from .utils import cast_overflow_tensors
 
-VisualTokenPruningMethod = Literal["vision_zip", "cdpruner"]
+VisualTokenPruningMethod = Literal["vision_zip", "cdpruner", "divprune"]
 _CDPRUNER_NOT_IMPLEMENTED = (
     "Qwen2.5-VL 'cdpruner' visual-token pruning is not implemented yet."
 )
@@ -75,6 +75,10 @@ class _CDPrunerConfig(_VisualTokenPruneMultiModalConfig, Protocol):
     cdpruner_debug: bool
 
 
+class _DivPruneConfig(_VisualTokenPruneMultiModalConfig, Protocol):
+    pass
+
+
 def _get_qwen2_5_visual_token_pruning_method(
     mm_config: _VisualTokenPruneMultiModalConfig | None,
 ) -> VisualTokenPruningMethod | None:
@@ -85,12 +89,14 @@ def _get_qwen2_5_visual_token_pruning_method(
 
 def _get_qwen2_5_prune_config(
     mm_config: _VisualTokenPruneMultiModalConfig | None,
-) -> _VisionZipConfig | _CDPrunerConfig | None:
+) -> _VisionZipConfig | _CDPrunerConfig | _DivPruneConfig | None:
     pruning_method = _get_qwen2_5_visual_token_pruning_method(mm_config)
     if pruning_method == "vision_zip":
         return cast(_VisionZipConfig, mm_config)
     if pruning_method == "cdpruner":
         return cast(_CDPrunerConfig, mm_config)
+    if pruning_method == "divprune":
+        return cast(_DivPruneConfig, mm_config)
     return None
 
 
@@ -108,6 +114,14 @@ def _get_qwen2_5_cdpruner_config(
     if _get_qwen2_5_visual_token_pruning_method(mm_config) != "cdpruner":
         return None
     return cast(_CDPrunerConfig, _get_qwen2_5_prune_config(mm_config))
+
+
+def _get_qwen2_5_divprune_config(
+    mm_config: _VisualTokenPruneMultiModalConfig | None,
+) -> _DivPruneConfig | None:
+    if _get_qwen2_5_visual_token_pruning_method(mm_config) != "divprune":
+        return None
+    return cast(_DivPruneConfig, _get_qwen2_5_prune_config(mm_config))
 
 
 def get_qwen2_5_pruned_num_tokens(
@@ -132,7 +146,7 @@ def apply_qwen2_5_visual_token_pruning(
     pruning_method = _get_qwen2_5_visual_token_pruning_method(mm_config)
     if pruning_method is None:
         return image_features, positions
-    
+
     if pruning_method == "vision_zip":
         return apply_qwen2_5_vision_zip(
             image_features,
@@ -141,10 +155,15 @@ def apply_qwen2_5_visual_token_pruning(
             positions,
             mm_config,
         )
-    
+
     if pruning_method == "cdpruner":
         raise NotImplementedError(_CDPRUNER_NOT_IMPLEMENTED)
-    
+
+    if pruning_method == "divprune":
+        divprune_config = _get_qwen2_5_divprune_config(mm_config)
+        assert divprune_config is not None
+        return apply_qwen2_5_divprune(image_features, positions, divprune_config)
+
     raise NotImplementedError(
         f"Unsupported Qwen2.5-VL visual-token pruning method: {pruning_method!r}"
     )
@@ -563,6 +582,48 @@ class Qwen2_5_VisionTransformerVisionZip(Qwen2_5_VisionTransformer):
 ##################################################################
 
 
+##################################################################
+########################### DivPrune ##############################
+##################################################################
+def apply_qwen2_5_divprune(
+    image_features: torch.Tensor,
+    positions: torch.Tensor,
+    mm_config: _DivPruneConfig,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    # Ported from DivPrune's LLaVA implementation:
+    # `divprune/LLaVA/llava/model/llava_arch.py` (`DivPrune` and
+    # `pairwise_cosine_similarity`, around lines 147-171).
+    # Mapping note: `threshold_ratio` in the reference is "keep ratio";
+    # here we use vLLM's prune config and derive keep count via
+    # `get_qwen2_5_pruned_num_tokens(...)` (= ceil(N * (1 - vt_prune_rate))).
+    num_tokens = image_features.shape[0]
+    if num_tokens == 0:
+        return image_features, positions
+
+    keep_tokens = get_qwen2_5_pruned_num_tokens(num_tokens, mm_config)
+    if keep_tokens >= num_tokens:
+        return image_features, positions
+
+    norm = image_features / image_features.norm(dim=1, keepdim=True).clamp(min=1e-8)
+    dist = 1.0 - torch.mm(norm, norm.transpose(0, 1))
+
+    selected = torch.empty(
+        keep_tokens,
+        dtype=torch.long,
+        device=image_features.device,
+    )
+    for i in range(keep_tokens):
+        if i == 0:
+            scores = torch.topk(dist, 2, dim=0, largest=False).values[1, :]
+        else:
+            previous = selected[:i]
+            scores = torch.index_select(dist, 0, previous).min(dim=0).values
+        selected[i] = scores.argmax()
+
+    selected = selected.sort().values
+    return image_features[selected], positions[selected]
+
+
 
 ############
 # Register
@@ -762,6 +823,7 @@ class Qwen2_5_VLPruneForConditionalGeneration(
         )
         self.vision_zip_config: _VisionZipConfig | None = None
         self.cdpruner_config: _CDPrunerConfig | None = None
+        self.divprune_config: _DivPruneConfig | None = None
         self.is_vision_zip_recompute_enabled = (
             self.is_visual_token_pruning_enabled
             and self.visual_token_pruning_method == "vision_zip"
@@ -778,6 +840,11 @@ class Qwen2_5_VLPruneForConditionalGeneration(
             and self.visual_token_pruning_method == "cdpruner"
         ):
             self._prune_impl_cls = Qwen2_5_VLCDPruneForConditionalGeneration
+        elif (
+            self.is_visual_token_pruning_enabled
+            and self.visual_token_pruning_method == "divprune"
+        ):
+            self._prune_impl_cls = Qwen2_5_VLDivPruneForConditionalGeneration
 
         if self._prune_impl_cls is not None:
             self._prune_impl_cls._init_prune_method(
@@ -995,6 +1062,55 @@ class Qwen2_5_VLCDPruneForConditionalGeneration(
         del image_input
         model._raise_cdpruner_not_implemented()
         raise RuntimeError("unreachable")
+
+
+class Qwen2_5_VLDivPruneForConditionalGeneration(
+    Qwen2_5_VLPruneForConditionalGeneration
+):
+    @staticmethod
+    def _init_prune_method(
+        model: Qwen2_5_VLPruneForConditionalGeneration,
+        *,
+        prefix: str,
+        multimodal_config: _VisualTokenPruneMultiModalConfig | None,
+    ) -> None:
+        del prefix
+        model.divprune_config = _get_qwen2_5_divprune_config(multimodal_config)
+        assert model.divprune_config is not None
+
+    @staticmethod
+    def _process_image_input_for_pruning(
+        model: Qwen2_5_VLPruneForConditionalGeneration,
+        image_input: Qwen2_5_VLImageInputs,
+    ) -> tuple[torch.Tensor, ...]:
+        image_embeds = model._process_image_input(image_input)
+
+        grid_thw = image_input["image_grid_thw"]
+        merge_size = model.visual.spatial_merge_size
+        sizes = (grid_thw.prod(-1) // merge_size // merge_size).tolist()
+        grid_thw_list = grid_thw.tolist()
+
+        image_embeds_split = image_embeds.split(sizes)
+        image_embeds_out = []
+        for emb, size in zip(image_embeds_split, grid_thw_list):
+            positions = compute_mrope_for_media(size, merge_size).to(emb.device)
+            emb, positions = apply_qwen2_5_divprune(
+                emb, positions, model.divprune_config
+            )
+            image_embeds_out.append(torch.cat([emb, positions], dim=1))
+        return tuple(image_embeds_out)
+
+    @staticmethod
+    def _process_video_input_for_pruning(
+        model: Qwen2_5_VLPruneForConditionalGeneration,
+        video_input: Qwen2_5_VLVideoInputs,
+        video_embeddings: tuple[torch.Tensor, ...],
+    ) -> tuple[torch.Tensor, ...]:
+        return Qwen2_5_VLVisionZipForConditionalGeneration._append_original_mrope_positions_to_videos(
+            model,
+            video_embeddings,
+            video_input,
+        )
 
     @staticmethod
     def _process_video_input_for_pruning(
