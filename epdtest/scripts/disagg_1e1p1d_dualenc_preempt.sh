@@ -1,7 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
-# Shared 1e1pd runner for both BENCHMARK=simple and BENCHMARK=randommm.
+# Experimental scheduler:
+# - Disaggregate prefill and decode (P and D are separate workers)
+# - Run encoder workers on both P GPU and D GPU
+# - Preempt encoder workers when P/D load is non-zero
 
 # -----------------------------------------------------------------------------
 # Configuration defaults
@@ -14,32 +17,43 @@ LOG_PATH="${LOG_PATH:-./epdtest/logs}"
 mkdir -p "$LOG_PATH"
 BENCHMARK="${BENCHMARK:-randommm}"
 
-ENCODE_PORT="${ENCODE_PORT:-19534}"
-PREFILL_DECODE_PORT="${PREFILL_DECODE_PORT:-19535}"
+ENCODE_ON_P_PORT="${ENCODE_ON_P_PORT:-19534}"
+PREFILL_PORT="${PREFILL_PORT:-19535}"
+DECODE_PORT="${DECODE_PORT:-19536}"
+ENCODE_ON_D_PORT="${ENCODE_ON_D_PORT:-19537}"
 PROXY_PORT="${PROXY_PORT:-10001}"
 
-GPU_E="${GPU_E:-0}"
-GPU_PD="${GPU_PD:-1}"
+GPU_P="${GPU_P:-0}"
+GPU_D="${GPU_D:-1}"
+ALLOW_SHARED_GPU="${ALLOW_SHARED_GPU:-0}"
 
 EC_SHARED_STORAGE_PATH="${EC_SHARED_STORAGE_PATH:-/tmp/ec_cache}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-12000}"
 
 NUM_PROMPTS="${NUM_PROMPTS:-300}"
-PD_GPU_MEMORY_UTILIZATION="${PD_GPU_MEMORY_UTILIZATION:-0.85}"
+BENCH_REQUEST_RATE="${BENCH_REQUEST_RATE:-32}"
+BENCH_MAX_CONCURRENCY="${BENCH_MAX_CONCURRENCY:-32}"
 PD_MAX_MODEL_LEN="${PD_MAX_MODEL_LEN:-65536}"
 PD_MAX_NUM_BATCHED_TOKENS="${PD_MAX_NUM_BATCHED_TOKENS:-32768}"
 PD_MAX_NUM_SEQS="${PD_MAX_NUM_SEQS:-32}"
-BENCH_REQUEST_RATE="${BENCH_REQUEST_RATE:-32}"
-BENCH_MAX_CONCURRENCY="${BENCH_MAX_CONCURRENCY:-32}"
-ENCODER_GPU_MEMORY_UTILIZATION="${ENCODER_GPU_MEMORY_UTILIZATION:-0.05}"
+NIXL_BASE_PORT="${NIXL_BASE_PORT:-$((5200 + ($$ % 1000)))}"
+PREFILL_NIXL_SIDE_CHANNEL_PORT="${PREFILL_NIXL_SIDE_CHANNEL_PORT:-$NIXL_BASE_PORT}"
+DECODE_NIXL_SIDE_CHANNEL_PORT="${DECODE_NIXL_SIDE_CHANNEL_PORT:-$((NIXL_BASE_PORT + 1000))}"
+PREFILL_GPU_MEMORY_UTILIZATION="${PREFILL_GPU_MEMORY_UTILIZATION:-0.75}"
+DECODE_GPU_MEMORY_UTILIZATION="${DECODE_GPU_MEMORY_UTILIZATION:-0.75}"
+ENCODER_ON_P_GPU_MEMORY_UTILIZATION="${ENCODER_ON_P_GPU_MEMORY_UTILIZATION:-0.10}"
+ENCODER_ON_D_GPU_MEMORY_UTILIZATION="${ENCODER_ON_D_GPU_MEMORY_UTILIZATION:-0.10}"
+
+# Coarse preemption controls
+PREEMPT_ENCODING="${PREEMPT_ENCODING:-1}"
+PREEMPT_CHECK_INTERVAL_SECONDS="${PREEMPT_CHECK_INTERVAL_SECONDS:-1}"
+PREEMPT_LOAD_THRESHOLD="${PREEMPT_LOAD_THRESHOLD:-1}"
+RESUME_LOAD_THRESHOLD="${RESUME_LOAD_THRESHOLD:-0}"
+
 VISUAL_TOKEN_PRUNING_METHOD="${VISUAL_TOKEN_PRUNING_METHOD:-}"
 IMAGES_PER_REQ="${IMAGES_PER_REQ:-1}"
 HF_DATASET_PATH="${HF_DATASET_PATH:-lmarena-ai/VisionArena-Chat}"
 METRICS_SAMPLING_INTERVAL_SECONDS="${METRICS_SAMPLING_INTERVAL_SECONDS:-1}"
-GPU_PROFILER="${GPU_PROFILER:-none}"
-NSYS_ENABLE_GPU_METRICS="${NSYS_ENABLE_GPU_METRICS:-1}"
-NSYS_GPU_METRICS_DEVICES="${NSYS_GPU_METRICS_DEVICES:-$GPU_E,$GPU_PD}"
-NSYS_GPU_METRICS_FREQUENCY="${NSYS_GPU_METRICS_FREQUENCY:-1000}"
 
 die() {
     echo "$*" >&2
@@ -55,6 +69,15 @@ validate_benchmark() {
             ;;
     esac
 }
+
+validate_gpu_layout() {
+    if [[ "$GPU_P" == "$GPU_D" && "$ALLOW_SHARED_GPU" != "1" ]]; then
+        die "This scheduler expects distinct GPUs for P and D: GPU_P=$GPU_P GPU_D=$GPU_D. Set ALLOW_SHARED_GPU=1 only if you intentionally want overlap."
+    fi
+}
+
+export UCX_TLS=all
+export UCX_NET_DEVICES=all
 
 ulimit -n "${ULIMIT_NOFILE:-65535}" >/dev/null 2>&1 || true
 
@@ -158,10 +181,16 @@ build_visual_token_pruning_args() {
 START_TIME=$(date +"%Y%m%d_%H%M%S")
 RUN_DIR="${RUN_DIR:-$LOG_PATH/$START_TIME}"
 mkdir -p "$RUN_DIR"
-ENC_LOG="$RUN_DIR/encoder.log"
-PD_LOG="$RUN_DIR/prefill_decode.log"
+ENC_P_LOG="$RUN_DIR/encoder_on_p.log"
+P_LOG="$RUN_DIR/prefill.log"
+D_LOG="$RUN_DIR/decode.log"
+ENC_D_LOG="$RUN_DIR/encoder_on_d.log"
 PROXY_LOG="$RUN_DIR/proxy.log"
-PROFILE_LOG_DIR="${PROFILE_LOG_DIR:-$RUN_DIR/profiler}"
+PREEMPT_LOG="$RUN_DIR/preemption.log"
+
+ENC_P_PID=""
+ENC_D_PID=""
+ENCODERS_PAUSED=0
 
 wait_for_server() {
     local port=$1
@@ -169,6 +198,11 @@ wait_for_server() {
         until curl -s localhost:$port/v1/chat/completions > /dev/null; do
             sleep 1
         done" && return 0 || return 1
+}
+
+port_in_use() {
+    local port=$1
+    ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]${port}$"
 }
 
 log_gpu_sm_utilization() {
@@ -180,7 +214,7 @@ log_gpu_sm_utilization() {
     output=$(nvidia-smi \
         --query-gpu=index,utilization.gpu,utilization.memory,memory.used,power.draw \
         --format=csv,noheader,nounits \
-        -i "$GPU_E,$GPU_PD" 2>/dev/null || true)
+        -i "$GPU_P,$GPU_D" 2>/dev/null || true)
     if [[ -z "$output" ]]; then
         return 0
     fi
@@ -190,85 +224,85 @@ log_gpu_sm_utilization() {
         mem_util=$(echo "$mem_util" | xargs)
         mem_used=$(echo "$mem_used" | xargs)
         power_draw=$(echo "$power_draw" | xargs)
-        local role="unknown"
-        if [[ "$gpu_index" == "$GPU_E" ]]; then
-            role="encoder"
-        elif [[ "$gpu_index" == "$GPU_PD" ]]; then
-            role="prefill_decode"
+
+        local -a roles=()
+        if [[ "$gpu_index" == "$GPU_P" ]]; then
+            roles+=("encode_on_p")
+            roles+=("prefill")
+        fi
+        if [[ "$gpu_index" == "$GPU_D" ]]; then
+            roles+=("encode_on_d")
+            roles+=("decode")
+        fi
+        local role
+        if [[ "${#roles[@]}" -eq 0 ]]; then
+            role="unknown"
+        else
+            role=$(IFS='+'; echo "${roles[*]}")
         fi
         echo "$ts,$role,$gpu_index,$sm_util,$mem_util,$mem_used,$power_draw" >> "$SM_LOG"
     done <<< "$output"
 }
 
-validate_profiler() {
-    case "$GPU_PROFILER" in
-        none)
-            return 0
-            ;;
-        nsys)
-            command -v nsys >/dev/null 2>&1 || {
-                echo "GPU_PROFILER=nsys requested, but nsys is not installed." >&2
-                exit 1
-            }
-            mkdir -p "$PROFILE_LOG_DIR"
-            ;;
-        ncu)
-            command -v ncu >/dev/null 2>&1 || {
-                echo "GPU_PROFILER=ncu requested, but ncu is not installed." >&2
-                exit 1
-            }
-            mkdir -p "$PROFILE_LOG_DIR"
-            ;;
-        *)
-            echo "Unsupported GPU_PROFILER='$GPU_PROFILER'. Use one of: none, nsys, ncu." >&2
-            exit 1
-            ;;
-    esac
+get_pd_request_load() {
+    local port=$1
+    local m
+    m=$(curl -fsS "http://127.0.0.1:${port}/metrics" 2>/dev/null || true)
+    if [[ -z "$m" ]]; then
+        echo 0
+        return 0
+    fi
+    awk '
+        /^vllm:num_requests_running\{/ {sum += $2}
+        /^vllm:num_requests_waiting\{/ {sum += $2}
+        END {print int(sum + 0)}
+    ' <<< "$m"
 }
 
-start_worker() {
-    local worker_name=$1
-    local log_file=$2
-    local cuda_visible_devices=$3
-    shift 3
-    local -a nsys_args=()
+pause_encoder_workers() {
+    if [[ "$ENCODERS_PAUSED" -eq 1 ]]; then
+        return 0
+    fi
+    [[ -n "$ENC_P_PID" ]] && kill -STOP "$ENC_P_PID" 2>/dev/null || true
+    [[ -n "$ENC_D_PID" ]] && kill -STOP "$ENC_D_PID" 2>/dev/null || true
+    ENCODERS_PAUSED=1
+    echo "$(date +%F\ %T) preempt: pause encoders" >> "$PREEMPT_LOG"
+}
 
-    case "$GPU_PROFILER" in
-        none)
-            CUDA_VISIBLE_DEVICES="$cuda_visible_devices" "$@" >"${log_file}" 2>&1 &
-            ;;
-        nsys)
-            if [[ "$NSYS_ENABLE_GPU_METRICS" == "1" ]]; then
-                nsys_args+=(
-                    --gpu-metrics-devices="$NSYS_GPU_METRICS_DEVICES"
-                    --gpu-metrics-frequency="$NSYS_GPU_METRICS_FREQUENCY"
-                )
-            fi
-            nsys profile \
-                --force-overwrite true \
-                --sample=none \
-                --trace=cuda,nvtx,osrt \
-                "${nsys_args[@]}" \
-                --output "${PROFILE_LOG_DIR}/${worker_name}" \
-                env CUDA_VISIBLE_DEVICES="$cuda_visible_devices" "$@" >"${log_file}" 2>&1 &
-            ;;
-        ncu)
-            env CUDA_VISIBLE_DEVICES="$cuda_visible_devices" ncu \
-                --target-processes all \
-                --set default \
-                --force-overwrite \
-                --export "${PROFILE_LOG_DIR}/${worker_name}" \
-                "$@" >"${log_file}" 2>&1 &
-            ;;
-    esac
+resume_encoder_workers() {
+    if [[ "$ENCODERS_PAUSED" -eq 0 ]]; then
+        return 0
+    fi
+    [[ -n "$ENC_P_PID" ]] && kill -CONT "$ENC_P_PID" 2>/dev/null || true
+    [[ -n "$ENC_D_PID" ]] && kill -CONT "$ENC_D_PID" 2>/dev/null || true
+    ENCODERS_PAUSED=0
+    echo "$(date +%F\ %T) preempt: resume encoders" >> "$PREEMPT_LOG"
+}
 
-    PIDS+=($!)
+preemption_controller_loop() {
+    echo "$(date +%F\ %T) preemption controller started (threshold=$PREEMPT_LOAD_THRESHOLD, resume=$RESUME_LOAD_THRESHOLD)" >> "$PREEMPT_LOG"
+    while true; do
+        local p_load d_load total_load
+        p_load=$(get_pd_request_load "$PREFILL_PORT")
+        d_load=$(get_pd_request_load "$DECODE_PORT")
+        total_load=$((p_load + d_load))
+
+        if [[ "$total_load" -ge "$PREEMPT_LOAD_THRESHOLD" ]]; then
+            pause_encoder_workers
+        elif [[ "$total_load" -le "$RESUME_LOAD_THRESHOLD" ]]; then
+            resume_encoder_workers
+        fi
+
+        sleep "$PREEMPT_CHECK_INTERVAL_SECONDS"
+    done
 }
 
 cleanup() {
     local rc=$?
     set +e
     trap - EXIT INT TERM USR1
+    # Ensure encoders are resumable before kill.
+    resume_encoder_workers
     for pid in "${PIDS[@]}"; do
         kill "$pid" 2>/dev/null || true
     done
@@ -281,8 +315,8 @@ cleanup() {
 }
 
 validate_benchmark
+validate_gpu_layout
 ensure_pruning_config_files
-validate_profiler
 
 trap cleanup EXIT
 trap cleanup INT
@@ -298,10 +332,15 @@ fi
 
 build_visual_token_pruning_args
 
-start_worker encoder "$ENC_LOG" "$GPU_E" \
-    vllm serve "$MODEL" \
-    --gpu-memory-utilization "$ENCODER_GPU_MEMORY_UTILIZATION" \
-    --port "$ENCODE_PORT" \
+while port_in_use "$PREFILL_NIXL_SIDE_CHANNEL_PORT" || port_in_use "$DECODE_NIXL_SIDE_CHANNEL_PORT"; do
+    PREFILL_NIXL_SIDE_CHANNEL_PORT=$((PREFILL_NIXL_SIDE_CHANNEL_PORT + 1))
+    DECODE_NIXL_SIDE_CHANNEL_PORT=$((DECODE_NIXL_SIDE_CHANNEL_PORT + 1))
+done
+
+# Encoder worker on prefill GPU
+CUDA_VISIBLE_DEVICES="$GPU_P" vllm serve "$MODEL" \
+    --gpu-memory-utilization "$ENCODER_ON_P_GPU_MEMORY_UTILIZATION" \
+    --port "$ENCODE_ON_P_PORT" \
     --enforce-eager \
     --enable-request-id-headers \
     --no-enable-prefix-caching \
@@ -315,12 +354,16 @@ start_worker encoder "$ENC_LOG" "$GPU_E" \
             "shared_storage_path": "'"$EC_SHARED_STORAGE_PATH"'"
         }
     }' \
-    "${VISUAL_TOKEN_PRUNING_ARGS[@]}"
+    "${VISUAL_TOKEN_PRUNING_ARGS[@]}" \
+    >"${ENC_P_LOG}" 2>&1 &
+ENC_P_PID=$!
+PIDS+=($ENC_P_PID)
 
-start_worker prefill_decode "$PD_LOG" "$GPU_PD" \
-    vllm serve "$MODEL" \
-    --gpu-memory-utilization "$PD_GPU_MEMORY_UTILIZATION" \
-    --port "$PREFILL_DECODE_PORT" \
+# Prefill worker
+CUDA_VISIBLE_DEVICES="$GPU_P" UCX_NET_DEVICES=all VLLM_NIXL_SIDE_CHANNEL_PORT="$PREFILL_NIXL_SIDE_CHANNEL_PORT" \
+vllm serve "$MODEL" \
+    --gpu-memory-utilization "$PREFILL_GPU_MEMORY_UTILIZATION" \
+    --port "$PREFILL_PORT" \
     --enforce-eager \
     --enable-request-id-headers \
     --max-model-len "$PD_MAX_MODEL_LEN" \
@@ -334,24 +377,90 @@ start_worker prefill_decode "$PD_LOG" "$GPU_PD" \
             "shared_storage_path": "'"$EC_SHARED_STORAGE_PATH"'"
         }
     }' \
-    "${VISUAL_TOKEN_PRUNING_ARGS[@]}"
+    --kv-transfer-config '{
+        "kv_connector": "NixlConnector",
+        "kv_role": "kv_producer"
+    }' \
+    "${VISUAL_TOKEN_PRUNING_ARGS[@]}" \
+    >"${P_LOG}" 2>&1 &
+PIDS+=($!)
 
-wait_for_server "$ENCODE_PORT"
-wait_for_server "$PREFILL_DECODE_PORT"
+# Decode worker
+CUDA_VISIBLE_DEVICES="$GPU_D" UCX_NET_DEVICES=all VLLM_NIXL_SIDE_CHANNEL_PORT="$DECODE_NIXL_SIDE_CHANNEL_PORT" \
+vllm serve "$MODEL" \
+    --gpu-memory-utilization "$DECODE_GPU_MEMORY_UTILIZATION" \
+    --port "$DECODE_PORT" \
+    --enforce-eager \
+    --enable-request-id-headers \
+    --max-model-len "$PD_MAX_MODEL_LEN" \
+    --max-num-batched-tokens "$PD_MAX_NUM_BATCHED_TOKENS" \
+    --max-num-seqs "$PD_MAX_NUM_SEQS" \
+    --allowed-local-media-path "${GIT_ROOT}"/tests/v1/ec_connector/integration \
+    --kv-transfer-config '{
+        "kv_connector": "NixlConnector",
+        "kv_role": "kv_consumer"
+    }' \
+    "${VISUAL_TOKEN_PRUNING_ARGS[@]}" \
+    >"${D_LOG}" 2>&1 &
+PIDS+=($!)
+
+# Encoder worker on decode GPU
+CUDA_VISIBLE_DEVICES="$GPU_D" vllm serve "$MODEL" \
+    --gpu-memory-utilization "$ENCODER_ON_D_GPU_MEMORY_UTILIZATION" \
+    --port "$ENCODE_ON_D_PORT" \
+    --enforce-eager \
+    --enable-request-id-headers \
+    --no-enable-prefix-caching \
+    --max-num-batched-tokens 114688 \
+    --max-num-seqs 128 \
+    --allowed-local-media-path "${GIT_ROOT}"/tests/v1/ec_connector/integration \
+    --ec-transfer-config '{
+        "ec_connector": "ECExampleConnector",
+        "ec_role": "ec_producer",
+        "ec_connector_extra_config": {
+            "shared_storage_path": "'"$EC_SHARED_STORAGE_PATH"'"
+        }
+    }' \
+    "${VISUAL_TOKEN_PRUNING_ARGS[@]}" \
+    >"${ENC_D_LOG}" 2>&1 &
+ENC_D_PID=$!
+PIDS+=($ENC_D_PID)
+
+wait_for_server "$ENCODE_ON_P_PORT"
+wait_for_server "$PREFILL_PORT"
+wait_for_server "$DECODE_PORT"
+wait_for_server "$ENCODE_ON_D_PORT"
 
 python "${GIT_ROOT}/examples/online_serving/disaggregated_encoder/disagg_epd_proxy.py" \
     --host "0.0.0.0" \
     --port "$PROXY_PORT" \
-    --encode-servers-urls "http://localhost:$ENCODE_PORT" \
-    --prefill-servers-urls "disable" \
-    --decode-servers-urls "http://localhost:$PREFILL_DECODE_PORT" \
+    --encode-servers-urls "http://localhost:$ENCODE_ON_P_PORT,http://localhost:$ENCODE_ON_D_PORT" \
+    --prefill-servers-urls "http://localhost:$PREFILL_PORT" \
+    --decode-servers-urls "http://localhost:$DECODE_PORT" \
     >"${PROXY_LOG}" 2>&1 &
 PIDS+=($!)
 
 wait_for_server "$PROXY_PORT"
 
-SM_LOG="$RUN_DIR/sm.log"
+if [[ "$PREEMPT_ENCODING" == "1" ]]; then
+    preemption_controller_loop &
+    PIDS+=($!)
+fi
 
+echo "1e1p1d dual-encoder preempt benchmark"
+echo "  benchmark          : $BENCHMARK"
+echo "  model              : $MODEL"
+echo "  encode_on_p_port   : $ENCODE_ON_P_PORT (GPU $GPU_P)"
+echo "  prefill_port       : $PREFILL_PORT (GPU $GPU_P)"
+echo "  decode_port        : $DECODE_PORT (GPU $GPU_D)"
+echo "  encode_on_d_port   : $ENCODE_ON_D_PORT (GPU $GPU_D)"
+echo "  proxy_port         : $PROXY_PORT"
+echo "  preempt_encoding   : $PREEMPT_ENCODING"
+echo "  preempt_threshold  : $PREEMPT_LOAD_THRESHOLD"
+echo "  resume_threshold   : $RESUME_LOAD_THRESHOLD"
+echo "  run_dir            : $RUN_DIR"
+
+SM_LOG="$RUN_DIR/sm.log"
 echo "timestamp,role,gpu_index,sm_utilization_pct,memory_utilization_pct,memory_used_mib,power_draw_watts" > "$SM_LOG"
 
 (
@@ -389,20 +498,5 @@ else
 fi
 
 vllm bench serve "${BENCH_ARGS[@]}"
-
-if [[ "$BENCHMARK" == "simple" ]]; then
-    curl http://127.0.0.1:"${PROXY_PORT}"/v1/chat/completions \
-        -H "Content-Type: application/json" \
-        -d '{
-        "model": "'"${MODEL}"'",
-        "messages": [
-        {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": [
-            {"type": "image_url", "image_url": {"url": "file://'"${GIT_ROOT}"'/tests/v1/ec_connector/integration/hato.jpg"}},
-            {"type": "text", "text": "What is in this image?"}
-        ]}
-        ]
-        }'
-fi
 
 cleanup

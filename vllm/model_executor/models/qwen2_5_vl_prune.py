@@ -54,7 +54,7 @@ from .qwen2_5_vl import (
 from .utils import maybe_prefix
 from .utils import cast_overflow_tensors
 
-VisualTokenPruningMethod = Literal["vision_zip", "cdpruner"]
+VisualTokenPruningMethod = Literal["visionzip", "cdpruner"]
 _CDPRUNER_NOT_IMPLEMENTED = (
     "Qwen2.5-VL 'cdpruner' visual-token pruning is not implemented yet."
 )
@@ -87,7 +87,7 @@ def _get_qwen2_5_prune_config(
     mm_config: _VisualTokenPruneMultiModalConfig | None,
 ) -> _VisionZipConfig | _CDPrunerConfig | None:
     pruning_method = _get_qwen2_5_visual_token_pruning_method(mm_config)
-    if pruning_method == "vision_zip":
+    if pruning_method == "visionzip":
         return cast(_VisionZipConfig, mm_config)
     if pruning_method == "cdpruner":
         return cast(_CDPrunerConfig, mm_config)
@@ -97,7 +97,7 @@ def _get_qwen2_5_prune_config(
 def _get_qwen2_5_vision_zip_config(
     mm_config: _VisualTokenPruneMultiModalConfig | None,
 ) -> _VisionZipConfig | None:
-    if _get_qwen2_5_visual_token_pruning_method(mm_config) != "vision_zip":
+    if _get_qwen2_5_visual_token_pruning_method(mm_config) != "visionzip":
         return None
     return cast(_VisionZipConfig, _get_qwen2_5_prune_config(mm_config))
 
@@ -133,7 +133,7 @@ def apply_qwen2_5_visual_token_pruning(
     if pruning_method is None:
         return image_features, positions
     
-    if pruning_method == "vision_zip":
+    if pruning_method == "visionzip":
         return apply_qwen2_5_vision_zip(
             image_features,
             importance_scores,
@@ -764,13 +764,13 @@ class Qwen2_5_VLPruneForConditionalGeneration(
         self.cdpruner_config: _CDPrunerConfig | None = None
         self.is_vision_zip_recompute_enabled = (
             self.is_visual_token_pruning_enabled
-            and self.visual_token_pruning_method == "vision_zip"
+            and self.visual_token_pruning_method == "visionzip"
         )
 
         self._prune_impl_cls: type[Any] | None = None
         if (
             self.is_visual_token_pruning_enabled
-            and self.visual_token_pruning_method == "vision_zip"
+            and self.visual_token_pruning_method == "visionzip"
         ):
             self._prune_impl_cls = Qwen2_5_VLVisionZipForConditionalGeneration
         elif (
