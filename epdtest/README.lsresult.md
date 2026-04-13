@@ -1,12 +1,14 @@
-# LS6 Result Notes (1e1p1d, randommm)
+# LS6 Result Notes (randommm)
 
-## Run command
+## 1) Baseline: `1e1p1d`
+
+### Run command
 
 ```bash
 BENCH_REQUEST_RATE=4 BENCH_MAX_CONCURRENCY=20 GPU_E=0 GPU_P=1 GPU_D=2 bash epdtest/run.sh --topology 1e1p1d --benchmark randommm
 ```
 
-## `nvidia-smi` process snapshot
+### `nvidia-smi` process snapshot
 
 ```text
 +-----------------------------------------------------------------------------------------+
@@ -14,13 +16,13 @@ BENCH_REQUEST_RATE=4 BENCH_MAX_CONCURRENCY=20 GPU_E=0 GPU_P=1 GPU_D=2 bash epdte
 |  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
 |        ID   ID                                                               Usage      |
 |=========================================================================================|
-|    0   N/A  N/A         2575250      C   VLLM::EngineCore                       9208MiB |
-|    1   N/A  N/A         2575257      C   VLLM::EngineCore                      27930MiB |
-|    2   N/A  N/A         2575267      C   VLLM::EngineCore                      27608MiB |
+|    0   N/A  N/A         2620503      C   VLLM::EngineCore                       8824MiB |
+|    1   N/A  N/A         2620516      C   VLLM::EngineCore                      27516MiB |
+|    2   N/A  N/A         2620517      C   VLLM::EngineCore                      27516MiB |
 +-----------------------------------------------------------------------------------------+
 ```
 
-## Benchmark output
+### Benchmark output
 
 ```text
 ============ Serving Benchmark Result ============
@@ -28,30 +30,277 @@ Successful requests:                     300
 Failed requests:                         0
 Maximum request concurrency:             20
 Request rate configured (RPS):           4.00
-Benchmark duration (s):                  77.84
+Benchmark duration (s):                  77.86
 Total input tokens:                      307200
 Total generated tokens:                  38400
 Request throughput (req/s):              3.85
-Output token throughput (tok/s):         493.29
-Peak output token throughput (tok/s):    872.00
-Peak concurrent requests:                27.00
-Total token throughput (tok/s):          4439.65
+Output token throughput (tok/s):         493.20
+Peak output token throughput (tok/s):    996.00
+Peak concurrent requests:                30.00
+Total token throughput (tok/s):          4438.83
 ---------------Time to First Token----------------
-Mean TTFT (ms):                          533.77
-Median TTFT (ms):                        544.29
-P99 TTFT (ms):                           1287.53
+Mean TTFT (ms):                          700.73
+Median TTFT (ms):                        665.17
+P99 TTFT (ms):                           2654.22
 -----Time per Output Token (excl. 1st token)------
-Mean TPOT (ms):                          21.69
-Median TPOT (ms):                        21.70
-P99 TPOT (ms):                           22.81
+Mean TPOT (ms):                          32.27
+Median TPOT (ms):                        32.98
+P99 TPOT (ms):                           38.00
 ---------------Inter-token Latency----------------
-Mean ITL (ms):                           22.08
-Median ITL (ms):                         20.92
-P99 ITL (ms):                            50.77
+Mean ITL (ms):                           32.67
+Median ITL (ms):                         20.47
+P99 ITL (ms):                            226.04
 ==================================================
 ```
 
-## Summary
+## 2) Multi-decode: `1e1pNd`
 
-This run is stable at the selected load (`BENCH_REQUEST_RATE=4`,
-`BENCH_MAX_CONCURRENCY=20`) with `300/300` successful requests.
+### Run command
+
+```bash
+TIMEOUT_SECONDS=600 BENCH_REQUEST_RATE=4 BENCH_MAX_CONCURRENCY=20 \
+GPU_E=0 GPU_P=1 GPU_D=0,2 \
+bash epdtest/run.sh --topology 1e1pNd --benchmark randommm
+```
+
+### `nvidia-smi` process snapshot
+
+```text
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A         2591816      C   VLLM::EngineCore                       8830MiB |
+|    0   N/A  N/A         2591824      C   VLLM::EngineCore                      19738MiB |
+|    1   N/A  N/A         2591817      C   VLLM::EngineCore                      27686MiB |
+|    2   N/A  N/A         2591831      C   VLLM::EngineCore                      27774MiB |
++-----------------------------------------------------------------------------------------+
+```
+
+### Benchmark output
+
+```text
+============ Serving Benchmark Result ============
+Successful requests:                     300
+Failed requests:                         0
+Maximum request concurrency:             20
+Request rate configured (RPS):           4.00
+Benchmark duration (s):                  80.32
+Total input tokens:                      307200
+Total generated tokens:                  38400
+Request throughput (req/s):              3.74
+Output token throughput (tok/s):         478.08
+Peak output token throughput (tok/s):    896.00
+Peak concurrent requests:                29.00
+Total token throughput (tok/s):          4302.73
+---------------Time to First Token----------------
+Mean TTFT (ms):                          1048.10
+Median TTFT (ms):                        899.84
+P99 TTFT (ms):                           3259.40
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          30.34
+Median TPOT (ms):                        29.22
+P99 TPOT (ms):                           48.28
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           30.46
+Median ITL (ms):                         20.74
+P99 ITL (ms):                            355.12
+==================================================
+```
+
+## 3) Multi-encoder: `Ne1p1d`
+
+### Run command
+
+```bash
+TIMEOUT_SECONDS=600 BENCH_REQUEST_RATE=4 BENCH_MAX_CONCURRENCY=20 \
+GPU_E=0,2 GPU_P=1 GPU_D=2 \
+bash epdtest/run.sh --topology Ne1p1d --benchmark randommm
+```
+
+### `nvidia-smi` process snapshot
+
+```text
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A         2599372      C   VLLM::EngineCore                       9888MiB |
+|    1   N/A  N/A         2599379      C   VLLM::EngineCore                      27804MiB |
+|    2   N/A  N/A         2599358      C   VLLM::EngineCore                      20322MiB |
+|    2   N/A  N/A         2599365      C   VLLM::EngineCore                       8824MiB |
++-----------------------------------------------------------------------------------------+
+```
+
+### Benchmark output
+
+```text
+============ Serving Benchmark Result ============
+Successful requests:                     300
+Failed requests:                         0
+Maximum request concurrency:             20
+Request rate configured (RPS):           4.00
+Benchmark duration (s):                  83.70
+Total input tokens:                      307200
+Total generated tokens:                  38400
+Request throughput (req/s):              3.58
+Output token throughput (tok/s):         458.78
+Peak output token throughput (tok/s):    926.00
+Peak concurrent requests:                31.00
+Total token throughput (tok/s):          4129.03
+---------------Time to First Token----------------
+Mean TTFT (ms):                          808.94
+Median TTFT (ms):                        689.64
+P99 TTFT (ms):                           2383.77
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          34.70
+Median TPOT (ms):                        34.42
+P99 TPOT (ms):                           48.93
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           34.97
+Median ITL (ms):                         20.49
+P99 ITL (ms):                            328.15
+==================================================
+```
+
+## 4) Multi-encoder variant: `Ne1p1d` (`GPU_E=0,1`)
+
+### Run command
+
+```bash
+TIMEOUT_SECONDS=600 BENCH_REQUEST_RATE=4 BENCH_MAX_CONCURRENCY=20 \
+GPU_E=0,1 GPU_P=1 GPU_D=2 \
+bash epdtest/run.sh --topology Ne1p1d --benchmark randommm
+```
+
+### `nvidia-smi` process snapshot
+
+```text
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A         2611488      C   VLLM::EngineCore                       9054MiB |
+|    1   N/A  N/A         2611498      C   VLLM::EngineCore                      19262MiB |
+|    1   N/A  N/A         2611505      C   VLLM::EngineCore                       8824MiB |
+|    2   N/A  N/A         2611477      C   VLLM::EngineCore                      28886MiB |
++-----------------------------------------------------------------------------------------+
+```
+
+### Benchmark output
+
+```text
+============ Serving Benchmark Result ============
+Successful requests:                     299
+Failed requests:                         1
+Maximum request concurrency:             20
+Request rate configured (RPS):           4.00
+Benchmark duration (s):                  80.96
+Total input tokens:                      306176
+Total generated tokens:                  38016
+Request throughput (req/s):              3.69
+Output token throughput (tok/s):         469.59
+Peak output token throughput (tok/s):    980.00
+Peak concurrent requests:                38.00
+Total token throughput (tok/s):          4251.64
+---------------Time to First Token----------------
+Mean TTFT (ms):                          1286.27
+Median TTFT (ms):                        1082.00
+P99 TTFT (ms):                           3762.20
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          30.27
+Median TPOT (ms):                        29.38
+P99 TPOT (ms):                           47.35
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           30.30
+Median ITL (ms):                         20.56
+P99 ITL (ms):                            270.89
+==================================================
+```
+
+## 5) Multi-encoder variant: `Ne1p1d` (`GPU_E=0,1,2`)
+
+### Run command
+
+```bash
+TIMEOUT_SECONDS=600 BENCH_REQUEST_RATE=4 BENCH_MAX_CONCURRENCY=20 \
+GPU_E=0,1,2 GPU_P=1 GPU_D=2 \
+bash epdtest/run.sh --topology Ne1p1d --benchmark randommm
+```
+
+### `nvidia-smi` process snapshot
+
+```text
++-----------------------------------------------------------------------------------------+
+| Processes:                                                                              |
+|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |
+|        ID   ID                                                               Usage      |
+|=========================================================================================|
+|    0   N/A  N/A         2627725      C   VLLM::EngineCore                       9058MiB |
+|    1   N/A  N/A         2627718      C   VLLM::EngineCore                       8824MiB |
+|    1   N/A  N/A         2627732      C   VLLM::EngineCore                      19274MiB |
+|    2   N/A  N/A         2627739      C   VLLM::EngineCore                       8824MiB |
+|    2   N/A  N/A         2627746      C   VLLM::EngineCore                      19352MiB |
++-----------------------------------------------------------------------------------------+
+```
+
+### Benchmark output
+
+```text
+============ Serving Benchmark Result ============
+Successful requests:                     300
+Failed requests:                         0
+Maximum request concurrency:             20
+Request rate configured (RPS):           4.00
+Benchmark duration (s):                  75.31
+Total input tokens:                      307200
+Total generated tokens:                  38400
+Request throughput (req/s):              3.98
+Output token throughput (tok/s):         509.88
+Peak output token throughput (tok/s):    1085.00
+Peak concurrent requests:                14.00
+Total token throughput (tok/s):          4588.91
+---------------Time to First Token----------------
+Mean TTFT (ms):                          225.43
+Median TTFT (ms):                        222.93
+P99 TTFT (ms):                           915.13
+-----Time per Output Token (excl. 1st token)------
+Mean TPOT (ms):                          3.51
+Median TPOT (ms):                        1.15
+P99 TPOT (ms):                           21.17
+---------------Inter-token Latency----------------
+Mean ITL (ms):                           3.67
+Median ITL (ms):                         1.15
+P99 ITL (ms):                            21.83
+==================================================
+```
+
+## 6) Comparison
+
+| Metric | `1e1p1d` | `1e1pNd` (`GPU_D=0,2`) | `Ne1p1d` (`GPU_E=0,2`) | `Ne1p1d` (`GPU_E=0,1`) | `Ne1p1d` (`GPU_E=0,1,2`) |
+|---|---:|---:|---:|---:|---:|
+| Successful / Failed | 300 / 0 | 300 / 0 | 300 / 0 | 299 / 1 | 300 / 0 |
+| Duration (s) | 77.86 | 80.32 | 83.70 | 80.96 | 75.31 |
+| Request throughput (req/s) | 3.85 | 3.74 | 3.58 | 3.69 | 3.98 |
+| Output throughput (tok/s) | 493.20 | 478.08 | 458.78 | 469.59 | 509.88 |
+| Peak output throughput (tok/s) | 996.00 | 896.00 | 926.00 | 980.00 | 1085.00 |
+| Peak concurrent requests | 30.00 | 29.00 | 31.00 | 38.00 | 14.00 |
+| Total throughput (tok/s) | 4438.83 | 4302.73 | 4129.03 | 4251.64 | 4588.91 |
+| Mean TTFT (ms) | 700.73 | 1048.10 | 808.94 | 1286.27 | 225.43 |
+| Median TTFT (ms) | 665.17 | 899.84 | 689.64 | 1082.00 | 222.93 |
+| P99 TTFT (ms) | 2654.22 | 3259.40 | 2383.77 | 3762.20 | 915.13 |
+| Mean TPOT (ms) | 32.27 | 30.34 | 34.70 | 30.27 | 3.51 |
+| Median TPOT (ms) | 32.98 | 29.22 | 34.42 | 29.38 | 1.15 |
+| P99 TPOT (ms) | 38.00 | 48.28 | 48.93 | 47.35 | 21.17 |
+| Mean ITL (ms) | 32.67 | 30.46 | 34.97 | 30.30 | 3.67 |
+| Median ITL (ms) | 20.47 | 20.74 | 20.49 | 20.56 | 1.15 |
+| P99 ITL (ms) | 226.04 | 355.12 | 328.15 | 270.89 | 21.83 |
+
+## 7) Summary
+
+Four runs are fully successful (`300/300`), and one run (`Ne1p1d` with `GPU_E=0,1`) has a single failed request (`299/300`).
+
+For this setup and load, `Ne1p1d` with `GPU_E=0,1,2` is now the strongest result, with the best request/output/total throughput and the best TTFT/TPOT/ITL latency profile.
