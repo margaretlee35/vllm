@@ -17,6 +17,20 @@ unalias vllm
 
 mkdir -p ./epdtest/slurm_logs
 
+RUN_STAMP="${RUN_STAMP:-$(date +"%Y%m%d_%H%M%S")}"
+export RUN_STAMP
+
 # --- Run ---
-bash ./epdtest/lmms_compare.sh
-bash ./epdtest/sweep_compare.sh
+LMMS_RC=0
+SWEEP_RC=0
+
+bash ./epdtest/lmms_compare.sh || LMMS_RC=$?
+bash ./epdtest/sweep_compare.sh || SWEEP_RC=$?
+
+# Always summarize logs at the end.
+bash ./epdtest/summarize_compare_logs.sh --run-stamp "$RUN_STAMP" || true
+
+if [[ "$LMMS_RC" -ne 0 || "$SWEEP_RC" -ne 0 ]]; then
+    echo "epd_compare completed with failures: lmms_rc=$LMMS_RC sweep_rc=$SWEEP_RC" >&2
+    exit 1
+fi

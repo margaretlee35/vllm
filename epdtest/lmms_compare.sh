@@ -352,6 +352,8 @@ run_lmms_eval_for_case() {
     mkdir -p "$outdir"
     local case_lmms_log="${outdir}/lmms_eval.log"
     local case_table_log="${outdir}/lmms_tables.log"
+    local case_run_dir="${RUN_ROOT}/${case_name}/serve_run"
+    local case_target_log="${case_run_dir}/target_script.log"
 
     local model_args="${LMMS_MODEL_ARGS_TEMPLATE//\{PORT\}/$port}"
     model_args="${model_args//\{MODEL\}/$MODEL}"
@@ -460,8 +462,41 @@ run_lmms_eval_for_case() {
         }
     ' "$case_lmms_log" > "$case_table_log"
 
+    # Build a compact per-case key-metrics block for the merged summary.
+    # Throughput comes from LMMS table output; TTFT/TPOT are best-effort from
+    # case logs (often unavailable in lmms_compare mode due bench interception).
+    local mmmu_acc total_gen_tokens total_elapsed_time avg_speed mean_ttft mean_tpot
+    mmmu_acc="$(awk -F'|' '/\|mmmu_val\|/ {gsub(/[[:space:]]/, "", $7); print $7; exit}' "$case_table_log" || true)"
+    total_gen_tokens="$(awk -F'|' '/\|total_gen_tokens/ {gsub(/[[:space:]]/, "", $3); print $3; exit}' "$case_table_log" || true)"
+    total_elapsed_time="$(awk -F'|' '/\|total_elapsed_time/ {gsub(/[[:space:]]/, "", $3); print $3; exit}' "$case_table_log" || true)"
+    avg_speed="$(awk -F'|' '/\|avg_speed/ {gsub(/[[:space:]]/, "", $3); print $3; exit}' "$case_table_log" || true)"
+
+    mean_ttft="$(grep -hE "Mean TTFT \(ms\):" "$case_target_log" "$case_lmms_log" 2>/dev/null | tail -n1 | sed -E 's/.*Mean TTFT \(ms\):[[:space:]]*([0-9.]+).*/\1/' || true)"
+    mean_tpot="$(grep -hE "Mean TPOT \(ms\):" "$case_target_log" "$case_lmms_log" 2>/dev/null | tail -n1 | sed -E 's/.*Mean TPOT \(ms\):[[:space:]]*([0-9.]+).*/\1/' || true)"
+
+    [[ -n "$mmmu_acc" ]] || mmmu_acc="N/A"
+    [[ -n "$total_gen_tokens" ]] || total_gen_tokens="N/A"
+    [[ -n "$total_elapsed_time" ]] || total_elapsed_time="N/A"
+    [[ -n "$avg_speed" ]] || avg_speed="N/A"
+    [[ -n "$mean_ttft" ]] || mean_ttft="N/A"
+    [[ -n "$mean_tpot" ]] || mean_tpot="N/A"
+
     {
         echo "## ${case_name}"
+        echo
+        echo "### Key Metrics"
+        echo
+        echo "| Metric | Value |"
+        echo "|---|---:|"
+        echo "| mmmu_acc | ${mmmu_acc} |"
+        echo "| total_gen_tokens | ${total_gen_tokens} |"
+        echo "| total_elapsed_time (s) | ${total_elapsed_time} |"
+        echo "| avg_speed (tokens/s) | ${avg_speed} |"
+        echo "| Mean TTFT (ms) | ${mean_ttft} |"
+        echo "| Mean TPOT (ms) | ${mean_tpot} |"
+        echo
+        echo "### Raw Tables"
+        echo
         cat "$case_table_log"
         echo
     } >> "$TABLE_SUMMARY_LOG"
