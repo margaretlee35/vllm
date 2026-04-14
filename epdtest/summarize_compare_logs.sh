@@ -76,6 +76,18 @@ extract_error_line_from_files() {
     echo "$error_line"
 }
 
+resolve_repo_path() {
+    local path="$1"
+    if [[ -z "$path" ]]; then
+        return 1
+    fi
+    if [[ "$path" = /* ]]; then
+        echo "$path"
+    else
+        echo "$REPO_ROOT/$path"
+    fi
+}
+
 summarize_lmms() {
     local root="$1"
     echo "## LMMS Compare"
@@ -167,19 +179,33 @@ summarize_sweep() {
         [[ -n "$run_dir" ]] || continue
         runs=$((runs + 1))
 
-        local case_name ipr launcher_log target_log
+        local case_name ipr launcher_log target_log target_log_rel target_output_rel
         case_name="$(basename "$(dirname "$run_dir")")"
         ipr="$(basename "$run_dir")"
         launcher_log="$run_dir/launcher.log"
-        target_log="$run_dir/target_script.log"
+
+        # Prefer the true target log path emitted by run.sh; fall back to legacy
+        # location under the case run directory.
+        target_output_rel="$(awk -F':' '/target_output[[:space:]]*:/ {sub(/^[[:space:]]*/, "", $2); print $2; exit}' "$launcher_log" 2>/dev/null || true)"
+        target_log_rel="$(awk -F':' '/run_dir[[:space:]]*:/ {sub(/^[[:space:]]*/, "", $2); print $2; exit}' "$launcher_log" 2>/dev/null || true)"
+        target_log=""
+
+        if [[ -n "$target_output_rel" ]]; then
+            target_log="$(resolve_repo_path "$target_output_rel" || true)"
+        fi
+        if [[ -z "$target_log" || ! -f "$target_log" ]]; then
+            if [[ -n "$target_log_rel" ]]; then
+                target_log="$(resolve_repo_path "$target_log_rel" || true)/target_script.log"
+            else
+                target_log="$run_dir/target_script.log"
+            fi
+        fi
+        if [[ ! -f "$target_log" ]]; then
+            target_log="$run_dir/target_script.log"
+        fi
 
         local error_line
         error_line="$(extract_error_line_from_files "$launcher_log" "$target_log")"
-        local status="OK"
-        if [[ -n "$error_line" ]]; then
-            status="FAIL"
-            fails=$((fails + 1))
-        fi
 
         local req_tput out_tput failed_req
         req_tput="$(awk -F':' '/Request throughput \(req\/s\):/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' "$target_log" 2>/dev/null || true)"
@@ -189,11 +215,29 @@ summarize_sweep() {
         [[ -n "$out_tput" ]] || out_tput="-"
         [[ -n "$failed_req" ]] || failed_req="-"
 
+        local benchmark_done="0"
+        if grep -qE "Serving Benchmark Result|Successful requests:" "$target_log" 2>/dev/null || \
+           grep -qE "Serving Benchmark Result|Successful requests:" "$launcher_log" 2>/dev/null; then
+            benchmark_done="1"
+        fi
+
+        local status="OK"
+        if [[ "$failed_req" =~ ^[0-9]+$ ]] && (( failed_req > 0 )); then
+            status="FAIL"
+        elif [[ -n "$error_line" && "$benchmark_done" != "1" ]]; then
+            status="FAIL"
+        fi
+        if [[ "$status" == "FAIL" ]]; then
+            fails=$((fails + 1))
+        fi
+
         echo "- ${case_name}/${ipr}: ${status} (failed_req=${failed_req}, req/s=${req_tput}, tok/s=${out_tput})"
         if [[ -n "$error_line" ]]; then
             echo "  cause: $error_line"
             echo "  launcher: ${launcher_log#$REPO_ROOT/}"
-            echo "  target: ${target_log#$REPO_ROOT/}"
+            if [[ -f "$target_log" ]]; then
+                echo "  target: ${target_log#$REPO_ROOT/}"
+            fi
         fi
     done < <(find "$root" -mindepth 2 -maxdepth 2 -type d -name "ipr*" | sort)
 
@@ -216,4 +260,3 @@ summarize_sweep() {
     summarize_sweep "$SWEEP_ROOT"
     echo "summary_file: ${SUMMARY_FILE#$REPO_ROOT/}"
 } | tee "$SUMMARY_FILE"
-
