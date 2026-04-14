@@ -248,3 +248,4 @@ csrc/cpu/cpu_attn_dispatch_generated.h
 # lmms eval
 epdtest/lmms_eval/
 lmms-eval/
+slurm_logs/
