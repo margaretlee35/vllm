@@ -1,41 +1,10 @@
 #!/bin/bash
 set -euo pipefail
 
-usage() {
-    cat <<'EOF'
-Usage:
-  bash epdtest/lmms_compare.sh
-
-Runs LMMS evaluation across 9 topology/GPU cases:
-  1) 1e1p1d (GPU_E=0 GPU_P=1 GPU_D=2)
-  2) 1e1pNd (GPU_E=0 GPU_P=1 GPU_D=0,2)
-  3) 1e1pNd_d_preempt (GPU_E=0 GPU_P=1 GPU_D=0,2)
-  4) Ne1p1d (GPU_E=0,1 GPU_P=1 GPU_D=2)
-  5) Ne1p1d (GPU_E=0,2 GPU_P=1 GPU_D=2)
-  6) Ne1p1d (GPU_E=0,1,2 GPU_P=1 GPU_D=2)
-  7) Ne1p1d_pd_preempt (GPU_E=0,1,2 GPU_P=1 GPU_D=2)
-  8) Ne1pNd (GPU_E=0,1 GPU_P=1 GPU_D=0,2)
-  9) Ne1pNd_pd_preempt (GPU_E=0,1 GPU_P=1 GPU_D=0,2)
-
-Notes:
-  - This script follows eval_lmms.sh conventions for LMMS options/env.
-  - Topology servers are launched through epdtest/run.sh.
-  - The built-in benchmark stage is intercepted/held while LMMS runs.
-EOF
-}
-
-if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-    usage
-    exit 0
-fi
-
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)
 cd "$REPO_ROOT"
 
-###############################################################################
-# Config (override via env)
-###############################################################################
 MODEL="${MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}"
 RUN_BENCHMARK="${RUN_BENCHMARK:-randommm}"
 PROXY_PORT="${PROXY_PORT:-10001}"
@@ -47,12 +16,11 @@ NUM_PROMPTS="${NUM_PROMPTS:-300}"
 SERVER_READY_TIMEOUT_SECONDS="${SERVER_READY_TIMEOUT_SECONDS:-900}"
 
 LMMS_TASKS="${LMMS_TASKS:-mmmu_val}"
-LMMS_LIMIT="${LMMS_LIMIT:-300}"   # 0 means no --limit
+LMMS_LIMIT="${LMMS_LIMIT:-300}"
 LMMS_BATCH_SIZE="${LMMS_BATCH_SIZE:-1}"
 LMMS_MODEL="${LMMS_MODEL:-openai_compatible}"
 LMMS_MODEL_ARGS_TEMPLATE="${LMMS_MODEL_ARGS_TEMPLATE:-model={MODEL},base_url=http://127.0.0.1:{PORT}/v1,api_key=EMPTY,temperature=0,max_new_tokens=128}"
 OPENAI_API_KEY="${OPENAI_API_KEY:-EMPTY}"
-FORCE_LOCAL_OPENAI_BASE_URL="${FORCE_LOCAL_OPENAI_BASE_URL:-1}"
 
 HF_HOME="${HF_HOME:-/workspace/.hf_cache}"
 HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-${HF_HOME}/datasets}"
@@ -60,483 +28,220 @@ HUGGINGFACE_HUB_CACHE="${HUGGINGFACE_HUB_CACHE:-${HF_HOME}/hub}"
 
 LOG_PATH="${LOG_PATH:-$REPO_ROOT/epdtest/lmms_eval}"
 EVAL_OUTPUT_ROOT="${EVAL_OUTPUT_ROOT:-$REPO_ROOT/epdtest/lmms_eval}"
-RUN_STAMP="${RUN_STAMP:-$(date +"%Y%m%d_%H%M%S")}"
-RUN_ROOT="${LOG_PATH}/${RUN_STAMP}_compare"
-EVAL_ROOT="${EVAL_OUTPUT_ROOT}/${RUN_STAMP}_compare"
-TABLE_SUMMARY_LOG="${EVAL_ROOT}/lmms_tables_summary.md"
+RUN_STAMP="${RUN_STAMP:-$(date +"%Y%m%d_%H%M%S")}" 
+RUN_ROOT="$LOG_PATH/${RUN_STAMP}_compare"
+EVAL_ROOT="$EVAL_OUTPUT_ROOT/${RUN_STAMP}_compare"
+TABLE_SUMMARY_LOG="$EVAL_ROOT/lmms_tables_summary.md"
 
 mkdir -p "$HF_HOME" "$HF_DATASETS_CACHE" "$HUGGINGFACE_HUB_CACHE" "$RUN_ROOT" "$EVAL_ROOT"
 
-python_supports_lmms_eval() {
-    local py="$1"
-    if [[ -z "$py" ]]; then
-        return 1
-    fi
-    if [[ "$py" == */* ]]; then
-        [[ -x "$py" ]] || return 1
-    else
-        command -v "$py" >/dev/null 2>&1 || return 1
-    fi
-
-    "$py" - <<'PY' >/dev/null 2>&1
-import importlib.util
-import sys
-sys.exit(0 if importlib.util.find_spec("lmms_eval") is not None else 1)
-PY
-}
-
-declare -a LMMS_PY_CANDIDATES=()
-if [[ -n "${LMMS_PYTHON_BIN:-}" ]]; then
-    LMMS_PY_CANDIDATES+=("$LMMS_PYTHON_BIN")
-fi
-if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
-    LMMS_PY_CANDIDATES+=("${VIRTUAL_ENV}/bin/python")
-fi
-if [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
-    LMMS_PY_CANDIDATES+=("$REPO_ROOT/.venv/bin/python")
-fi
-LMMS_PY_CANDIDATES+=("python3" "python")
-
-LMMS_PYTHON_BIN=""
-for candidate in "${LMMS_PY_CANDIDATES[@]}"; do
-    if python_supports_lmms_eval "$candidate"; then
-        LMMS_PYTHON_BIN="$candidate"
-        break
-    fi
-done
-
+LMMS_PYTHON_BIN="${LMMS_PYTHON_BIN:-}"
 if [[ -z "$LMMS_PYTHON_BIN" ]]; then
-    echo "Could not find a Python with lmms_eval installed." >&2
-    echo "Install hint: .venv/bin/python -m pip install lmms-eval" >&2
-    echo "Or set LMMS_PYTHON_BIN to a Python that has lmms_eval." >&2
-    exit 2
+  if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
+    LMMS_PYTHON_BIN="${VIRTUAL_ENV}/bin/python"
+  elif [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
+    LMMS_PYTHON_BIN="$REPO_ROOT/.venv/bin/python"
+  elif command -v python3 >/dev/null 2>&1; then
+    LMMS_PYTHON_BIN="python3"
+  else
+    LMMS_PYTHON_BIN="python"
+  fi
 fi
 
 REAL_VLLM_BIN="${REAL_VLLM_BIN:-$REPO_ROOT/.venv/bin/vllm}"
 if [[ ! -x "$REAL_VLLM_BIN" ]]; then
-    if command -v vllm >/dev/null 2>&1; then
-        REAL_VLLM_BIN="$(command -v vllm)"
-    else
-        echo "Could not find vllm executable. Set REAL_VLLM_BIN or activate the venv." >&2
-        exit 2
-    fi
+  REAL_VLLM_BIN="$(command -v vllm)"
 fi
 
-declare -a CASE_NAMES=(
-    "1e1p1d_e0_p1_d2"
-    "1e1pNd_e0_p1_d0-2"
-    "1e1pNd_d_preempt_e0_p1_d0-2"
-    "Ne1p1d_e0-1_p1_d2"
-    "Ne1p1d_e0-2_p1_d2"
-    "Ne1p1d_e0-1-2_p1_d2"
-    "Ne1p1d_pd_preempt_e0-1-2_p1_d2"
-    "Ne1pNd_e0-1_p1_d0-2"
-    "Ne1pNd_pd_preempt_e0-1_p1_d0-2"
+CASES=(
+  "1e1p1d_e0_p1_d2|1e1p1d|0|1|2"
+  "1e1pNd_e0_p1_d0-2|1e1pNd|0|1|0,2"
+  "1e1pNd_d_preempt_e0_p1_d0-2|1e1pNd_d_preempt|0|1|0,2"
+  "Ne1p1d_e0-1_p1_d2|Ne1p1d|0,1|1|2"
+  "Ne1p1d_e0-2_p1_d2|Ne1p1d|0,2|1|2"
+  "Ne1p1d_e0-1-2_p1_d2|Ne1p1d|0,1,2|1|2"
+  "Ne1p1d_pd_preempt_e0-1-2_p1_d2|Ne1p1d_pd_preempt|0,1,2|1|2"
+  "Ne1pNd_e0-1_p1_d0-2|Ne1pNd|0,1|1|0,2"
+  "Ne1pNd_pd_preempt_e0-1_p1_d0-2|Ne1pNd_pd_preempt|0,1|1|0,2"
 )
-
-declare -a CASE_TOPOLOGIES=(
-    "1e1p1d"
-    "1e1pNd"
-    "1e1pNd_d_preempt"
-    "Ne1p1d"
-    "Ne1p1d"
-    "Ne1p1d"
-    "Ne1p1d_pd_preempt"
-    "Ne1pNd"
-    "Ne1pNd_pd_preempt"
-)
-
-declare -a CASE_GPU_E=(
-    "0"
-    "0"
-    "0"
-    "0,1"
-    "0,2"
-    "0,1,2"
-    "0,1,2"
-    "0,1"
-    "0,1"
-)
-
-declare -a CASE_GPU_P=("1" "1" "1" "1" "1" "1" "1" "1" "1")
-declare -a CASE_GPU_D=("2" "0,2" "0,2" "2" "2" "2" "2" "0,2" "0,2")
 
 CURRENT_GROUP_PID=""
 CURRENT_WRAPPER_DIR=""
 
-###############################################################################
-# Helpers
-###############################################################################
 cleanup() {
-    local rc=$?
-    set +e
-    trap - EXIT INT TERM
-    if [[ -n "${CURRENT_GROUP_PID:-}" ]]; then
-        kill -- -"${CURRENT_GROUP_PID}" 2>/dev/null || true
-        sleep 2
-        kill -9 -- -"${CURRENT_GROUP_PID}" 2>/dev/null || true
-    fi
-    if [[ -n "${CURRENT_WRAPPER_DIR:-}" && -d "${CURRENT_WRAPPER_DIR}" ]]; then
-        rm -rf "${CURRENT_WRAPPER_DIR}" 2>/dev/null || true
-    fi
-    exit "$rc"
+  set +e
+  if [[ -n "$CURRENT_GROUP_PID" ]]; then
+    kill -- -"$CURRENT_GROUP_PID" 2>/dev/null || true
+    sleep 2
+    kill -9 -- -"$CURRENT_GROUP_PID" 2>/dev/null || true
+    CURRENT_GROUP_PID=""
+  fi
+  if [[ -n "$CURRENT_WRAPPER_DIR" && -d "$CURRENT_WRAPPER_DIR" ]]; then
+    rm -rf "$CURRENT_WRAPPER_DIR" 2>/dev/null || true
+    CURRENT_WRAPPER_DIR=""
+  fi
 }
 trap cleanup EXIT INT TERM
 
-port_in_use() {
-    local port="$1"
-    ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]${port}$"
+wait_proxy_ready() {
+  local pid="$1"
+  local log="$2"
+  local url="http://127.0.0.1:${PROXY_PORT}/v1/models"
+  local deadline=$((SECONDS + SERVER_READY_TIMEOUT_SECONDS))
+
+  while (( SECONDS < deadline )); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      echo "Case launcher exited before proxy became ready. Log: $log" >&2
+      tail -n 120 "$log" >&2 || true
+      return 1
+    fi
+    if curl -fsS "$url" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "Timed out waiting for proxy readiness. Log: $log" >&2
+  tail -n 120 "$log" >&2 || true
+  return 1
 }
 
-wait_for_port_down() {
-    local port="$1"
-    local timeout_sec="${2:-60}"
-    local deadline=$((SECONDS + timeout_sec))
-    while (( SECONDS < deadline )); do
-        if ! port_in_use "$port"; then
-            return 0
-        fi
-        sleep 1
-    done
-    return 1
-}
+start_case() {
+  local case_name="$1" topology="$2" gpu_e="$3" gpu_p="$4" gpu_d="$5"
+  local case_root="$RUN_ROOT/$case_name"
+  local case_run_dir="$case_root/serve_run"
+  local case_log="$case_root/launcher.log"
+  local wrapper_dir="$case_root/bin"
 
-wait_for_proxy_ready() {
-    local port="$1"
-    local run_group_pid="$2"
-    local run_log="$3"
-    local deadline=$((SECONDS + SERVER_READY_TIMEOUT_SECONDS))
-    local url="http://127.0.0.1:${port}/v1/models"
+  mkdir -p "$case_root" "$case_run_dir" "$wrapper_dir"
 
-    while (( SECONDS < deadline )); do
-        if ! kill -0 "$run_group_pid" 2>/dev/null; then
-            echo "Case launcher exited before proxy became ready. Log: ${run_log}" >&2
-            tail -n 200 "$run_log" >&2 || true
-            return 1
-        fi
-        if curl -fsS "$url" >/dev/null 2>&1; then
-            return 0
-        fi
-        sleep 1
-    done
-
-    echo "Timed out waiting for proxy readiness on port ${port}. Log: ${run_log}" >&2
-    tail -n 200 "$run_log" >&2 || true
-    return 1
-}
-
-create_vllm_wrapper() {
-    local wrapper_dir="$1"
-    mkdir -p "$wrapper_dir"
-    cat > "${wrapper_dir}/vllm" <<'WRAP'
+  cat > "$wrapper_dir/vllm" <<'WRAP'
 #!/bin/bash
 set -euo pipefail
 if [[ "${VLLM_INTERCEPT_BENCH:-0}" == "1" && "${1:-}" == "bench" && "${2:-}" == "serve" ]]; then
-    echo "[vllm-wrapper] intercepted: vllm bench serve (holding process for LMMS eval)"
-    while true; do
-        sleep 3600
-    done
+  echo "[vllm-wrapper] intercepted: vllm bench serve"
+  while true; do sleep 3600; done
 fi
 exec "${REAL_VLLM_BIN:?REAL_VLLM_BIN is not set}" "$@"
 WRAP
-    chmod +x "${wrapper_dir}/vllm"
+  chmod +x "$wrapper_dir/vllm"
+  CURRENT_WRAPPER_DIR="$wrapper_dir"
+
+  echo
+  echo "==== CASE: $case_name ===="
+  echo "topology=$topology GPU_E=$gpu_e GPU_P=$gpu_p GPU_D=$gpu_d"
+  echo "run_dir=${case_run_dir#$REPO_ROOT/}"
+
+  setsid env \
+    PATH="$wrapper_dir:$PATH" \
+    VLLM_INTERCEPT_BENCH=1 \
+    REAL_VLLM_BIN="$REAL_VLLM_BIN" \
+    TIMEOUT_SECONDS="$TIMEOUT_SECONDS" \
+    BENCH_REQUEST_RATE="$BENCH_REQUEST_RATE" \
+    BENCH_MAX_CONCURRENCY="$BENCH_MAX_CONCURRENCY" \
+    BENCHMARK="$RUN_BENCHMARK" \
+    MODEL="$MODEL" \
+    IMAGES_PER_REQ="$IMAGES_PER_REQ" \
+    NUM_PROMPTS="$NUM_PROMPTS" \
+    GPU_E="$gpu_e" \
+    GPU_P="$gpu_p" \
+    GPU_D="$gpu_d" \
+    LOG_PATH="$RUN_ROOT" \
+    RUN_DIR="$case_run_dir" \
+    bash ./epdtest/run.sh \
+      --topology "$topology" \
+      --benchmark "$RUN_BENCHMARK" \
+      --images-per-req "$IMAGES_PER_REQ" \
+      > "$case_log" 2>&1 &
+
+  CURRENT_GROUP_PID="$!"
+  wait_proxy_ready "$CURRENT_GROUP_PID" "$case_log"
+  echo "Proxy ready on port $PROXY_PORT for case $case_name"
 }
 
-start_case_servers() {
-    local case_name="$1"
-    local topology="$2"
-    local gpu_e="$3"
-    local gpu_p="$4"
-    local gpu_d="$5"
-
-    local case_root="${RUN_ROOT}/${case_name}"
-    local case_run_dir="${case_root}/serve_run"
-    local case_log="${case_root}/launcher.log"
-    local wrapper_dir="${case_root}/bin"
-    mkdir -p "$case_root" "$case_run_dir"
-
-    create_vllm_wrapper "$wrapper_dir"
-    CURRENT_WRAPPER_DIR="$wrapper_dir"
-
-    echo
-    echo "==== CASE: ${case_name} ===="
-    echo "topology=${topology} GPU_E=${gpu_e} GPU_P=${gpu_p} GPU_D=${gpu_d}"
-    echo "run_dir=${case_run_dir#$REPO_ROOT/}"
-
-    # setsid creates an isolated process group; we can tear down all descendants
-    # with kill -- -PID after LMMS finishes.
-    setsid env \
-        PATH="${wrapper_dir}:$PATH" \
-        VLLM_INTERCEPT_BENCH=1 \
-        REAL_VLLM_BIN="$REAL_VLLM_BIN" \
-        TIMEOUT_SECONDS="$TIMEOUT_SECONDS" \
-        BENCH_REQUEST_RATE="$BENCH_REQUEST_RATE" \
-        BENCH_MAX_CONCURRENCY="$BENCH_MAX_CONCURRENCY" \
-        BENCHMARK="$RUN_BENCHMARK" \
-        MODEL="$MODEL" \
-        IMAGES_PER_REQ="$IMAGES_PER_REQ" \
-        NUM_PROMPTS="$NUM_PROMPTS" \
-        GPU_E="$gpu_e" \
-        GPU_P="$gpu_p" \
-        GPU_D="$gpu_d" \
-        LOG_PATH="$RUN_ROOT" \
-        RUN_DIR="$case_run_dir" \
-        bash ./epdtest/run.sh \
-            --topology "$topology" \
-            --benchmark "$RUN_BENCHMARK" \
-            --images-per-req "$IMAGES_PER_REQ" \
-            >"$case_log" 2>&1 &
-
-    CURRENT_GROUP_PID="$!"
-    wait_for_proxy_ready "$PROXY_PORT" "$CURRENT_GROUP_PID" "$case_log"
-    echo "Proxy ready on port ${PROXY_PORT} for case ${case_name}"
+stop_case() {
+  cleanup
 }
 
-stop_case_servers() {
-    if [[ -n "${CURRENT_GROUP_PID:-}" ]]; then
-        kill -- -"${CURRENT_GROUP_PID}" 2>/dev/null || true
-        sleep 2
-        kill -9 -- -"${CURRENT_GROUP_PID}" 2>/dev/null || true
-        CURRENT_GROUP_PID=""
-    fi
-
-    if [[ -n "${CURRENT_WRAPPER_DIR:-}" && -d "${CURRENT_WRAPPER_DIR}" ]]; then
-        rm -rf "${CURRENT_WRAPPER_DIR}" 2>/dev/null || true
-        CURRENT_WRAPPER_DIR=""
-    fi
-
-    if ! wait_for_port_down "$PROXY_PORT" 120; then
-        echo "Warning: proxy port ${PROXY_PORT} still appears in use; continuing." >&2
-    fi
-}
-
-preflight_lmms_tasks() {
-    local preflight_log="${RUN_ROOT}/lmms_preflight.log"
-    set +e
-    "$LMMS_PYTHON_BIN" - "$LMMS_TASKS" >"$preflight_log" 2>&1 <<'PY'
+preflight() {
+  "$LMMS_PYTHON_BIN" - "$LMMS_TASKS" <<'PY' >/dev/null
 import re
 import sys
-
 from lmms_eval.tasks import TaskManager
 
-task_spec = sys.argv[1]
-tasks = [t for t in re.split(r"[,\s]+", task_spec.strip()) if t]
-if not tasks:
-    raise ValueError("LMMS_TASKS resolved to an empty task list.")
-
-tm = TaskManager("")
-tm.load_task_or_group(tasks)
-print(f"LMMS preflight OK for tasks: {tasks}")
+tasks = [t for t in re.split(r"[,\s]+", sys.argv[1].strip()) if t]
+TaskManager("").load_task_or_group(tasks)
 PY
-    local rc=$?
-    set -e
-
-    if [[ $rc -ne 0 ]]; then
-        echo "LMMS preflight failed. See: ${preflight_log#$REPO_ROOT/}" >&2
-        tail -n 120 "$preflight_log" >&2 || true
-        echo >&2
-        echo "Likely cause: broken/incomplete lmms-eval task package in the current Python environment." >&2
-        echo "Recommended fix:" >&2
-        echo "  $LMMS_PYTHON_BIN -m pip install --upgrade --force-reinstall --no-cache-dir lmms-eval" >&2
-        echo "Optional pin (if your environment requires a fixed version):" >&2
-        echo "  $LMMS_PYTHON_BIN -m pip install --upgrade --force-reinstall --no-cache-dir lmms-eval==0.7.1" >&2
-        exit 2
-    fi
-
-    echo "LMMS task preflight passed for tasks: $LMMS_TASKS"
+  echo "LMMS task preflight passed for tasks: $LMMS_TASKS"
 }
 
-run_lmms_eval_for_case() {
-    local case_name="$1"
-    local port="$2"
-
-    export HF_HOME HF_DATASETS_CACHE HUGGINGFACE_HUB_CACHE OPENAI_API_KEY
-
-    local outdir="${EVAL_ROOT}/${case_name}"
-    mkdir -p "$outdir"
-    local case_lmms_log="${outdir}/lmms_eval.log"
-    local case_table_log="${outdir}/lmms_tables.log"
-    local case_run_dir="${RUN_ROOT}/${case_name}/serve_run"
-    local case_target_log="${case_run_dir}/target_script.log"
-
-    local model_args="${LMMS_MODEL_ARGS_TEMPLATE//\{PORT\}/$port}"
-    model_args="${model_args//\{MODEL\}/$MODEL}"
-
-    case "$LMMS_MODEL" in
-        openai|openai_compatible|openai_compatible_chat|async_openai|async_openai_compatible|async_openai_compatible_chat)
-            local local_base_url="http://127.0.0.1:${port}/v1"
-            local canonical_args="model=${MODEL},base_url=${local_base_url},api_key=${OPENAI_API_KEY},temperature=0,max_new_tokens=128"
-            export OPENAI_API_BASE="$local_base_url"
-
-            if [[ "$FORCE_LOCAL_OPENAI_BASE_URL" == "1" ]]; then
-                if [[ "$model_args" == *"base_url="* ]]; then
-                    model_args=$(echo "$model_args" | sed -E "s|base_url=[^,]*|base_url=${local_base_url}|g")
-                else
-                    model_args="${model_args},base_url=${local_base_url}"
-                fi
-            fi
-            if [[ "$model_args" != *"api_key="* ]]; then
-                model_args="${model_args},api_key=${OPENAI_API_KEY}"
-            fi
-            if [[ "$model_args" == *"model="* ]]; then
-                model_args=$(echo "$model_args" | sed -E "s|model=[^,}]*}?|model=${MODEL}|g")
-            else
-                model_args="model=${MODEL},${model_args}"
-            fi
-            if [[ "$model_args" == *"{MODEL"* || "$model_args" == *"{PORT"* || "$model_args" == *"{"* || "$model_args" == *"}"* ]]; then
-                model_args="$canonical_args"
-            fi
-            ;;
-    esac
-
-    local -a LIMIT_ARGS=()
-    if [[ -n "${LMMS_LIMIT}" && "${LMMS_LIMIT}" != "0" ]]; then
-        LIMIT_ARGS+=(--limit "$LMMS_LIMIT")
-    fi
-
-    local model_args_for_log="$model_args"
-    model_args_for_log=$(echo "$model_args_for_log" | sed -E 's/(api_key=)[^,]*/\1***REDACTED***/g')
-    echo "LMMS model args (${case_name}): ${model_args_for_log}"
-
-    set +e
-    "$LMMS_PYTHON_BIN" -m lmms_eval \
-        --model "$LMMS_MODEL" \
-        --model_args "$model_args" \
-        --tasks "$LMMS_TASKS" \
-        --batch_size "$LMMS_BATCH_SIZE" \
-        --output_path "$outdir" \
-        --log_samples \
-        "${LIMIT_ARGS[@]}" 2>&1 | tee "$case_lmms_log"
-    local lmms_rc=${PIPESTATUS[0]}
-    set -e
-    if [[ "$lmms_rc" -ne 0 ]]; then
-        echo "LMMS evaluation failed for ${case_name}. See: ${case_lmms_log#$REPO_ROOT/}" >&2
-        return "$lmms_rc"
-    fi
-
-    awk '
-        BEGIN {
-            in_tasks = 0
-            in_tput = 0
-            found_tasks = 0
-            found_tput = 0
-            seen_tput_row = 0
-        }
-        /^\| Tasks[[:space:]]*\|/ {
-            in_tasks = 1
-            found_tasks = 1
-            print
-            next
-        }
-        in_tasks {
-            if ($0 ~ /^\|/) {
-                print
-                next
-            }
-            if ($0 ~ /^[[:space:]]*$/) {
-                print ""
-            }
-            in_tasks = 0
-        }
-        /^Throughput Summary[[:space:]]*$/ {
-            if (found_tasks) {
-                print ""
-            }
-            in_tput = 1
-            found_tput = 1
-            seen_tput_row = 0
-            print
-            next
-        }
-        in_tput {
-            if ($0 ~ /^\|/) {
-                print
-                seen_tput_row = 1
-                next
-            }
-            if ($0 ~ /^[[:space:]]*$/) {
-                # Keep blank lines, but do not terminate before table rows appear.
-                print ""
-                if (seen_tput_row) {
-                    in_tput = 0
-                }
-                next
-            }
-            # Non-table, non-blank line ends throughput capture.
-            in_tput = 0
-        }
-        END {
-            if (!found_tasks) {
-                print "[warn] task metric table not found in lmms output."
-            }
-            if (!found_tput) {
-                print "[warn] throughput summary table not found in lmms output."
-            }
-        }
-    ' "$case_lmms_log" > "$case_table_log"
-
-    {
-        echo "## ${case_name}"
-        echo
-        cat "$case_table_log"
-        echo
-    } >> "$TABLE_SUMMARY_LOG"
-
-    echo "LMMS output saved: ${outdir#$REPO_ROOT/}"
-    echo "LMMS raw log: ${case_lmms_log#$REPO_ROOT/}"
-    echo "LMMS table log: ${case_table_log#$REPO_ROOT/}"
+extract_tables() {
+  local in_log="$1"
+  local out_log="$2"
+  awk '
+    BEGIN { in_tasks=0; in_t=0; got_tasks=0; got_t=0; }
+    /^\| Tasks[[:space:]]*\|/ { in_tasks=1; got_tasks=1; print; next }
+    in_tasks {
+      if ($0 ~ /^\|/) { print; next }
+      if ($0 ~ /^[[:space:]]*$/) print ""
+      in_tasks=0
+    }
+    /^Throughput Summary[[:space:]]*$/ { if (got_tasks) print ""; in_t=1; got_t=1; print; next }
+    in_t {
+      if ($0 ~ /^\|/) { print; next }
+      if ($0 ~ /^[[:space:]]*$/) { print ""; next }
+      in_t=0
+    }
+    END {
+      if (!got_tasks) print "[warn] task metric table not found in lmms output."
+      if (!got_t) print "[warn] throughput summary table not found in lmms output."
+    }
+  ' "$in_log" > "$out_log"
 }
 
-summarize_outputs() {
-    local root="$1"
-    "$LMMS_PYTHON_BIN" - "$root" <<'PY'
-import json
-import sys
-from pathlib import Path
+run_lmms() {
+  local case_name="$1"
+  local outdir="$EVAL_ROOT/$case_name"
+  local lmms_log="$outdir/lmms_eval.log"
+  local table_log="$outdir/lmms_tables.log"
+  local model_args="${LMMS_MODEL_ARGS_TEMPLATE//\{MODEL\}/$MODEL}"
+  model_args="${model_args//\{PORT\}/$PROXY_PORT}"
 
-root = Path(sys.argv[1])
+  mkdir -p "$outdir"
+  export HF_HOME HF_DATASETS_CACHE HUGGINGFACE_HUB_CACHE OPENAI_API_KEY
 
-def collect_metrics(obj, prefix=""):
-    out = {}
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            key = f"{prefix}.{k}" if prefix else k
-            out.update(collect_metrics(v, key))
-    elif isinstance(obj, (int, float)):
-        lk = prefix.lower()
-        if any(tok in lk for tok in ("acc", "score", "exact_match")):
-            out[prefix] = obj
-    return out
+  local -a limit_arg=()
+  if [[ -n "$LMMS_LIMIT" && "$LMMS_LIMIT" != "0" ]]; then
+    limit_arg=(--limit "$LMMS_LIMIT")
+  fi
 
-case_dirs = sorted([p for p in root.iterdir() if p.is_dir()])
-for case_dir in case_dirs:
-    json_files = sorted(case_dir.rglob("*.json"))
-    if not json_files:
-        print(f"[{case_dir.name}] no json outputs found")
-        continue
-    ranked = sorted(
-        json_files,
-        key=lambda p: ("result" not in p.name.lower(), "metric" not in p.name.lower(), -p.stat().st_size),
-    )
-    chosen = ranked[0]
-    try:
-        data = json.loads(chosen.read_text())
-    except Exception as e:
-        print(f"[{case_dir.name}] failed to parse {chosen}: {e}")
-        continue
-    metrics = collect_metrics(data)
-    print(f"\n[{case_dir.name}] metrics from {chosen.name}")
-    if not metrics:
-        print("  (no accuracy-like numeric metrics auto-detected)")
-    else:
-        for k in sorted(metrics):
-            print(f"  {k}: {metrics[k]}")
-PY
+  local model_args_for_log
+  model_args_for_log=$(echo "$model_args" | sed -E 's/(api_key=)[^,]*/\1***REDACTED***/g')
+  echo "LMMS model args ($case_name): $model_args_for_log"
+
+  "$LMMS_PYTHON_BIN" -m lmms_eval \
+    --model "$LMMS_MODEL" \
+    --model_args "$model_args" \
+    --tasks "$LMMS_TASKS" \
+    --batch_size "$LMMS_BATCH_SIZE" \
+    --output_path "$outdir" \
+    --log_samples \
+    "${limit_arg[@]}" 2>&1 | tee "$lmms_log"
+
+  extract_tables "$lmms_log" "$table_log"
+
+  {
+    echo "## $case_name"
+    echo
+    cat "$table_log"
+    echo
+  } >> "$TABLE_SUMMARY_LOG"
+
+  echo "LMMS output saved: ${outdir#$REPO_ROOT/}"
+  echo "LMMS raw log: ${lmms_log#$REPO_ROOT/}"
+  echo "LMMS table log: ${table_log#$REPO_ROOT/}"
 }
 
-###############################################################################
-# Main
-###############################################################################
 echo "lmms_compare"
 echo "  model                  : $MODEL"
 echo "  run_benchmark          : $RUN_BENCHMARK"
@@ -556,22 +261,14 @@ echo "  table_summary          : ${TABLE_SUMMARY_LOG#$REPO_ROOT/}"
 echo "# LMMS Table Summary ($RUN_STAMP)" >> "$TABLE_SUMMARY_LOG"
 echo >> "$TABLE_SUMMARY_LOG"
 
-preflight_lmms_tasks
+preflight
 
-for idx in "${!CASE_NAMES[@]}"; do
-    case_name="${CASE_NAMES[$idx]}"
-    topology="${CASE_TOPOLOGIES[$idx]}"
-    gpu_e="${CASE_GPU_E[$idx]}"
-    gpu_p="${CASE_GPU_P[$idx]}"
-    gpu_d="${CASE_GPU_D[$idx]}"
-
-    start_case_servers "$case_name" "$topology" "$gpu_e" "$gpu_p" "$gpu_d"
-    run_lmms_eval_for_case "$case_name" "$PROXY_PORT"
-    stop_case_servers
+for spec in "${CASES[@]}"; do
+  IFS='|' read -r case_name topology gpu_e gpu_p gpu_d <<< "$spec"
+  start_case "$case_name" "$topology" "$gpu_e" "$gpu_p" "$gpu_d"
+  run_lmms "$case_name"
+  stop_case
 done
 
-echo
-echo "==== Summary (auto-detected metrics) ===="
-summarize_outputs "$EVAL_ROOT"
 echo
 echo "Done."
