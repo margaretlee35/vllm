@@ -32,10 +32,15 @@ uv venv --python 3.12 --seed --managed-python
 bash tools/patch_venv_activate_cuda.sh .venv
 source .venv/bin/activate
 nvcc --version
-uv pip install -r requirements/build.txt --torch-backend=auto
-uv pip install -e '.[bench]' --torch-backend=auto
+uv pip install -r requirements/build.txt --torch-backend=cu128
+uv pip install -e '.[bench]' --torch-backend=cu128
 uv pip install "nixl>=0.7.1,<0.10.0"
-uv pip install lmms-eval
+
+git clone https://github.com/EvolvingLMMs-Lab/lmms-eval.git
+cd lmms-eval
+pip install -e .
 ```
 
-Note: "uv pip install -e . --torch-backend=auto" will take > 15 minutes
+Note:
+- "uv pip install -e . --torch-backend=cu128" will take > 15 minutes
+- put lmms-eval/ at .gitignore

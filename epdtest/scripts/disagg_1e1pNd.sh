@@ -197,11 +197,12 @@ detect_nixl_available() {
 import importlib.util
 import sys
 
-for module in ("nixl._api", "rixl._api"):
-    if importlib.util.find_spec(module) is not None:
-        sys.exit(0)
+try:
+    available = importlib.util.find_spec("nixl._api") is not None
+except ModuleNotFoundError:
+    available = False
 
-sys.exit(1)
+sys.exit(0 if available else 1)
 PY
 }
 
