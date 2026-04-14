@@ -60,6 +60,7 @@ EVAL_OUTPUT_ROOT="${EVAL_OUTPUT_ROOT:-$REPO_ROOT/epdtest/lmms_eval}"
 RUN_STAMP="${RUN_STAMP:-$(date +"%Y%m%d_%H%M%S")}"
 RUN_ROOT="${LOG_PATH}/${RUN_STAMP}_compare"
 EVAL_ROOT="${EVAL_OUTPUT_ROOT}/${RUN_STAMP}_compare"
+TABLE_SUMMARY_LOG="${EVAL_ROOT}/lmms_tables_summary.md"
 
 mkdir -p "$HF_HOME" "$HF_DATASETS_CACHE" "$HUGGINGFACE_HUB_CACHE" "$RUN_ROOT" "$EVAL_ROOT"
 
@@ -341,6 +342,8 @@ run_lmms_eval_for_case() {
 
     local outdir="${EVAL_ROOT}/${case_name}"
     mkdir -p "$outdir"
+    local case_lmms_log="${outdir}/lmms_eval.log"
+    local case_table_log="${outdir}/lmms_tables.log"
 
     local model_args="${LMMS_MODEL_ARGS_TEMPLATE//\{PORT\}/$port}"
     model_args="${model_args//\{MODEL\}/$MODEL}"
@@ -381,6 +384,7 @@ run_lmms_eval_for_case() {
     model_args_for_log=$(echo "$model_args_for_log" | sed -E 's/(api_key=)[^,]*/\1***REDACTED***/g')
     echo "LMMS model args (${case_name}): ${model_args_for_log}"
 
+    set +e
     "$LMMS_PYTHON_BIN" -m lmms_eval \
         --model "$LMMS_MODEL" \
         --model_args "$model_args" \
@@ -388,9 +392,75 @@ run_lmms_eval_for_case() {
         --batch_size "$LMMS_BATCH_SIZE" \
         --output_path "$outdir" \
         --log_samples \
-        "${LIMIT_ARGS[@]}"
+        "${LIMIT_ARGS[@]}" 2>&1 | tee "$case_lmms_log"
+    local lmms_rc=${PIPESTATUS[0]}
+    set -e
+    if [[ "$lmms_rc" -ne 0 ]]; then
+        echo "LMMS evaluation failed for ${case_name}. See: ${case_lmms_log#$REPO_ROOT/}" >&2
+        return "$lmms_rc"
+    fi
+
+    awk '
+        BEGIN {
+            in_tasks = 0
+            in_tput = 0
+            found_tasks = 0
+            found_tput = 0
+        }
+        /^\| Tasks[[:space:]]*\|/ {
+            in_tasks = 1
+            found_tasks = 1
+            print
+            next
+        }
+        in_tasks {
+            if ($0 ~ /^\|/) {
+                print
+                next
+            }
+            if ($0 ~ /^$/) {
+                print ""
+            }
+            in_tasks = 0
+        }
+        /^Throughput Summary[[:space:]]*$/ {
+            if (found_tasks) {
+                print ""
+            }
+            in_tput = 1
+            found_tput = 1
+            print
+            next
+        }
+        in_tput {
+            if ($0 ~ /^\|/) {
+                print
+                next
+            }
+            if ($0 ~ /^$/) {
+                print ""
+            }
+            in_tput = 0
+        }
+        END {
+            if (!found_tasks) {
+                print "[warn] task metric table not found in lmms output."
+            }
+            if (!found_tput) {
+                print "[warn] throughput summary table not found in lmms output."
+            }
+        }
+    ' "$case_lmms_log" > "$case_table_log"
+
+    {
+        echo "## ${case_name}"
+        cat "$case_table_log"
+        echo
+    } >> "$TABLE_SUMMARY_LOG"
 
     echo "LMMS output saved: ${outdir#$REPO_ROOT/}"
+    echo "LMMS raw log: ${case_lmms_log#$REPO_ROOT/}"
+    echo "LMMS table log: ${case_table_log#$REPO_ROOT/}"
 }
 
 summarize_outputs() {
@@ -456,6 +526,11 @@ echo "  lmms_limit             : $LMMS_LIMIT"
 echo "  lmms_batch_size        : $LMMS_BATCH_SIZE"
 echo "  log_root               : ${RUN_ROOT#$REPO_ROOT/}"
 echo "  eval_root              : ${EVAL_ROOT#$REPO_ROOT/}"
+echo "  table_summary          : ${TABLE_SUMMARY_LOG#$REPO_ROOT/}"
+
+: > "$TABLE_SUMMARY_LOG"
+echo "# LMMS Table Summary ($RUN_STAMP)" >> "$TABLE_SUMMARY_LOG"
+echo >> "$TABLE_SUMMARY_LOG"
 
 preflight_lmms_tasks
 

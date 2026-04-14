@@ -159,10 +159,30 @@ parse_encode_ports() {
             die "ENCODE_PORTS count (${#ENCODE_PORT_LIST[@]}) must match GPU_E count (${#ENCODE_GPUS[@]})"
         fi
     else
+        local candidate_port="$ENCODE_PORT"
+        local -a reserved_ports=("$PREFILL_PORT" "$DECODE_PORT" "$PROXY_PORT")
+        local adjusted=0
         for idx in "${!ENCODE_GPUS[@]}"; do
-            ENCODE_PORT_LIST+=("$((ENCODE_PORT + idx))")
+            while contains_value "$candidate_port" "${reserved_ports[@]}" || \
+                  contains_value "$candidate_port" "${ENCODE_PORT_LIST[@]}"; do
+                adjusted=1
+                candidate_port=$((candidate_port + 1))
+            done
+            ENCODE_PORT_LIST+=("$candidate_port")
+            candidate_port=$((candidate_port + 1))
         done
+
+        if [[ "$adjusted" == "1" ]]; then
+            echo "Adjusted encoder ports to avoid collisions with prefill/decode/proxy ports."
+        fi
     fi
+
+    local port
+    for port in "${ENCODE_PORT_LIST[@]}"; do
+        if contains_value "$port" "$PREFILL_PORT" "$DECODE_PORT" "$PROXY_PORT"; then
+            die "Encoder port collision detected: ${port}. Choose non-overlapping ENCODE_PORT/ENCODE_PORTS."
+        fi
+    done
 }
 
 
