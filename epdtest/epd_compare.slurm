@@ -12,8 +12,8 @@
 
 # Any other commands must follow all #SBATCH directives...
 source "$HOME/.bashrc"
-vllm
-unalias vllm
+cd $WORK/git_repos/vllm
+source .venv/bin/activate
 
 mkdir -p ./epdtest/slurm_logs
 
