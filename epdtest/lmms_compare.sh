@@ -297,6 +297,42 @@ stop_case_servers() {
     fi
 }
 
+preflight_lmms_tasks() {
+    local preflight_log="${RUN_ROOT}/lmms_preflight.log"
+    set +e
+    "$LMMS_PYTHON_BIN" - "$LMMS_TASKS" >"$preflight_log" 2>&1 <<'PY'
+import re
+import sys
+
+from lmms_eval.tasks import TaskManager
+
+task_spec = sys.argv[1]
+tasks = [t for t in re.split(r"[,\s]+", task_spec.strip()) if t]
+if not tasks:
+    raise ValueError("LMMS_TASKS resolved to an empty task list.")
+
+tm = TaskManager("")
+tm.load_task_or_group(tasks)
+print(f"LMMS preflight OK for tasks: {tasks}")
+PY
+    local rc=$?
+    set -e
+
+    if [[ $rc -ne 0 ]]; then
+        echo "LMMS preflight failed. See: ${preflight_log#$REPO_ROOT/}" >&2
+        tail -n 120 "$preflight_log" >&2 || true
+        echo >&2
+        echo "Likely cause: broken/incomplete lmms-eval task package in the current Python environment." >&2
+        echo "Recommended fix:" >&2
+        echo "  $LMMS_PYTHON_BIN -m pip install --upgrade --force-reinstall --no-cache-dir lmms-eval" >&2
+        echo "Optional pin (if your environment requires a fixed version):" >&2
+        echo "  $LMMS_PYTHON_BIN -m pip install --upgrade --force-reinstall --no-cache-dir lmms-eval==0.7.1" >&2
+        exit 2
+    fi
+
+    echo "LMMS task preflight passed for tasks: $LMMS_TASKS"
+}
+
 run_lmms_eval_for_case() {
     local case_name="$1"
     local port="$2"
@@ -420,6 +456,8 @@ echo "  lmms_limit             : $LMMS_LIMIT"
 echo "  lmms_batch_size        : $LMMS_BATCH_SIZE"
 echo "  log_root               : ${RUN_ROOT#$REPO_ROOT/}"
 echo "  eval_root              : ${EVAL_ROOT#$REPO_ROOT/}"
+
+preflight_lmms_tasks
 
 for idx in "${!CASE_NAMES[@]}"; do
     case_name="${CASE_NAMES[$idx]}"
