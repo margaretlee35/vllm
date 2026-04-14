@@ -7,7 +7,7 @@ Usage:
   bash epdtest/sweep_compare.sh
 
 This script sweeps randommm runs across:
-  - 6 topology/GPU layouts
+  - 9 topology/GPU layouts
   - IMAGES_PER_REQ = 1, 2, 4, 8
 
 Fixed benchmark settings:
@@ -35,13 +35,16 @@ TIMEOUT_SECONDS=600
 BENCH_REQUEST_RATE=8
 BENCH_MAX_CONCURRENCY=32
 BENCHMARK="randommm"
-IMAGES_PER_REQ_LIST=(1 2 4 8)
+IMAGES_PER_REQ_LIST=(1)
 
 declare -a CASE_NAMES=(
     "1e1p1d_e0_p1_d2"
     "1e1pNd_e0_p1_d0-2"
-    "Ne1p1d_e0-2_p1_d2"
+    "1e1pNd_e0_p1_d1-2"
+    "1e1pNd_e0_p1_d0-1-2"
+    "1e1pNd_d_preempt_e0_p1_d0-1-2"
     "Ne1p1d_e0-1_p1_d2"
+    "Ne1p1d_e0-2_p1_d2"
     "Ne1p1d_e0-1-2_p1_d2"
     "Ne1p1d_pd_preempt_e0-1-2_p1_d2"
 )
@@ -49,6 +52,9 @@ declare -a CASE_NAMES=(
 declare -a CASE_TOPOLOGIES=(
     "1e1p1d"
     "1e1pNd"
+    "1e1pNd"
+    "1e1pNd"
+    "1e1pNd_d_preempt"
     "Ne1p1d"
     "Ne1p1d"
     "Ne1p1d"
@@ -58,8 +64,11 @@ declare -a CASE_TOPOLOGIES=(
 declare -a CASE_GPU_E=(
     "0"
     "0"
-    "0,2"
+    "0"
+    "0"
+    "0"
     "0,1"
+    "0,2"
     "0,1,2"
     "0,1,2"
 )
@@ -71,12 +80,17 @@ declare -a CASE_GPU_P=(
     "1"
     "1"
     "1"
+    "1"
+    "1"
+    "1"
 )
 
 declare -a CASE_GPU_D=(
     "2"
     "0,2"
-    "2"
+    "1,2"
+    "0,1,2"
+    "0,1,2"
     "2"
     "2"
     "2"
