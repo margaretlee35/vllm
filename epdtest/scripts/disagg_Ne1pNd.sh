@@ -1,8 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Shared Ne1pNd runner with forced PD-over-encode preempt bias for both
-# BENCHMARK=simple and BENCHMARK=randommm.
+# Shared Ne1pNd runner for both BENCHMARK=simple and BENCHMARK=randommm.
 # This topology runs:
 # - N encoder instances (E1..EN)
 # - 1 prefill instance (P)
@@ -10,9 +9,6 @@ set -euo pipefail
 #
 # Multi-encoder is controlled via comma-separated GPU_E, e.g. GPU_E="0,2".
 # Multi-decode is controlled via comma-separated GPU_D, e.g. GPU_D="0,2".
-# On GPUs shared between encoder and prefill/decode, this script always
-# deprioritizes encoder by applying lower process priority and lower CUDA
-# scheduler share for encoder processes.
 
 # -----------------------------------------------------------------------------
 # Configuration defaults
@@ -65,11 +61,6 @@ VISUAL_TOKEN_PRUNING_METHOD="${VISUAL_TOKEN_PRUNING_METHOD:-}"
 IMAGES_PER_REQ="${IMAGES_PER_REQ:-1}"
 HF_DATASET_PATH="${HF_DATASET_PATH:-lmarena-ai/VisionArena-Chat}"
 METRICS_SAMPLING_INTERVAL_SECONDS="${METRICS_SAMPLING_INTERVAL_SECONDS:-1}"
-ENCODER_NICE="${ENCODER_NICE:-10}"
-ENCODER_MPS_ACTIVE_THREAD_PERCENTAGE="${ENCODER_MPS_ACTIVE_THREAD_PERCENTAGE:-20}"
-PD_MPS_ACTIVE_THREAD_PERCENTAGE="${PD_MPS_ACTIVE_THREAD_PERCENTAGE:-100}"
-ENCODER_CUDA_DEVICE_MAX_CONNECTIONS="${ENCODER_CUDA_DEVICE_MAX_CONNECTIONS:-1}"
-PD_CUDA_DEVICE_MAX_CONNECTIONS="${PD_CUDA_DEVICE_MAX_CONNECTIONS:-32}"
 
 KV_CONNECTOR_NAME=""
 PREFILL_KV_TRANSFER_CONFIG=""
@@ -77,10 +68,6 @@ DECODE_KV_TRANSFER_CONFIG=""
 ENCODE_URLS_CSV=""
 DECODE_URLS_CSV=""
 MONITOR_GPU_CSV=""
-PREEMPT_SHARED_GPU_CSV=""
-PREFILL_SHARES_ENCODER_GPU=0
-declare -a DECODE_SHARES_ENCODER_GPU=()
-declare -a ENCODE_SHARED_WITH_PD=()
 
 START_TIME=$(date +"%Y%m%d_%H%M%S")
 RUN_DIR="${RUN_DIR:-$LOG_PATH/$START_TIME}"
@@ -308,48 +295,6 @@ build_decode_layout() {
 }
 
 
-configure_pd_preempt_layout() {
-    ENCODE_SHARED_WITH_PD=()
-    PREFILL_SHARES_ENCODER_GPU=0
-    DECODE_SHARES_ENCODER_GPU=()
-    PREEMPT_SHARED_GPU_CSV=""
-
-    local -a shared_gpus=()
-    local idx
-    local gpu
-    for idx in "${!ENCODE_GPUS[@]}"; do
-        gpu="${ENCODE_GPUS[$idx]}"
-        if [[ "$gpu" == "$GPU_P" ]] || contains_value "$gpu" "${DECODE_GPUS[@]}"; then
-            ENCODE_SHARED_WITH_PD+=(1)
-            if ! contains_value "$gpu" "${shared_gpus[@]}"; then
-                shared_gpus+=("$gpu")
-            fi
-        else
-            ENCODE_SHARED_WITH_PD+=(0)
-        fi
-    done
-
-    if contains_value "$GPU_P" "${ENCODE_GPUS[@]}"; then
-        PREFILL_SHARES_ENCODER_GPU=1
-    fi
-
-    for gpu in "${DECODE_GPUS[@]}"; do
-        if contains_value "$gpu" "${ENCODE_GPUS[@]}"; then
-            DECODE_SHARES_ENCODER_GPU+=(1)
-            if ! contains_value "$gpu" "${shared_gpus[@]}"; then
-                shared_gpus+=("$gpu")
-            fi
-        else
-            DECODE_SHARES_ENCODER_GPU+=(0)
-        fi
-    done
-
-    if [[ ${#shared_gpus[@]} -gt 0 ]]; then
-        PREEMPT_SHARED_GPU_CSV=$(IFS=','; echo "${shared_gpus[*]}")
-    fi
-}
-
-
 detect_nixl_available() {
     local python_bin
     if command -v python3 >/dev/null 2>&1; then
@@ -530,24 +475,12 @@ cleanup() {
 
 
 print_layout() {
-    echo "Ne1pNd PD-preempt layout"
+    echo "Ne1pNd layout"
     echo "  gpu_encoder_list : $(IFS=','; echo "${ENCODE_GPUS[*]}")"
     echo "  encoder_ports    : $(IFS=','; echo "${ENCODE_PORT_LIST[*]}")"
     echo "  gpu_prefill      : $GPU_P"
     echo "  gpu_decode_list  : $(IFS=','; echo "${DECODE_GPUS[*]}")"
     echo "  decode_ports     : $(IFS=','; echo "${DECODE_PORT_LIST[*]}")"
-    echo "  pd_preempt_bias  : always (encode is deprioritized on shared GPUs)"
-    if [[ -n "$PREEMPT_SHARED_GPU_CSV" ]]; then
-        echo "  shared_pd_e_gpus : $PREEMPT_SHARED_GPU_CSV"
-        echo "  encoder_nice     : $ENCODER_NICE"
-        echo "  encoder_mps_pct  : $ENCODER_MPS_ACTIVE_THREAD_PERCENTAGE"
-        echo "  pd_mps_pct       : $PD_MPS_ACTIVE_THREAD_PERCENTAGE"
-        if ! command -v nvidia-cuda-mps-control >/dev/null 2>&1; then
-            echo "  preempt_note     : CUDA MPS control not found; nice + CUDA_DEVICE_MAX_CONNECTIONS still apply."
-        fi
-    else
-        echo "  shared_pd_e_gpus : none"
-    fi
     echo "  kv_connector     : $KV_CONNECTOR_NAME"
     if [[ "$KV_CONNECTOR_NAME" == "NixlConnector" ]]; then
         echo "  nixl_prefill_sc  : $PREFILL_NIXL_SIDE_CHANNEL_PORT"
@@ -671,7 +604,6 @@ parse_decode_gpus
 parse_decode_ports
 build_encode_layout
 build_decode_layout
-configure_pd_preempt_layout
 resolve_kv_connector
 prepare_storage_paths
 
@@ -693,53 +625,30 @@ for idx in "${!ENCODE_GPUS[@]}"; do
     encode_gpu="${ENCODE_GPUS[$idx]}"
     encode_port="${ENCODE_PORT_LIST[$idx]}"
     encode_log="${ENCODE_LOGS[$idx]}"
-    encode_shared_with_pd="${ENCODE_SHARED_WITH_PD[$idx]}"
 
-    declare -a ENCODE_ENV=("CUDA_VISIBLE_DEVICES=$encode_gpu")
-    if [[ "$encode_shared_with_pd" == "1" ]]; then
-        ENCODE_ENV+=(
-            "CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=$ENCODER_MPS_ACTIVE_THREAD_PERCENTAGE"
-            "CUDA_DEVICE_MAX_CONNECTIONS=$ENCODER_CUDA_DEVICE_MAX_CONNECTIONS"
-        )
-    fi
-
-    declare -a ENCODE_CMD=(
-        env "${ENCODE_ENV[@]}"
-        vllm serve "$MODEL"
-        --gpu-memory-utilization "$ENCODER_GPU_MEMORY_UTILIZATION"
-        --port "$encode_port"
-        --enforce-eager
-        --enable-request-id-headers
-        --no-enable-prefix-caching
-        --max-num-batched-tokens 114688
-        --max-num-seqs 128
-        --allowed-local-media-path "${GIT_ROOT}"/tests/v1/ec_connector/integration
+    CUDA_VISIBLE_DEVICES="$encode_gpu" vllm serve "$MODEL" \
+        --gpu-memory-utilization "$ENCODER_GPU_MEMORY_UTILIZATION" \
+        --port "$encode_port" \
+        --enforce-eager \
+        --enable-request-id-headers \
+        --no-enable-prefix-caching \
+        --max-num-batched-tokens 114688 \
+        --max-num-seqs 128 \
+        --allowed-local-media-path "${GIT_ROOT}"/tests/v1/ec_connector/integration \
         --ec-transfer-config '{
             "ec_connector": "ECExampleConnector",
             "ec_role": "ec_producer",
             "ec_connector_extra_config": {
                 "shared_storage_path": "'"$EC_SHARED_STORAGE_PATH"'"
             }
-        }'
-        "${VISUAL_TOKEN_PRUNING_ARGS[@]}"
-    )
-
-    if [[ "$encode_shared_with_pd" == "1" ]] && command -v nice >/dev/null 2>&1; then
-        nice -n "$ENCODER_NICE" "${ENCODE_CMD[@]}" >"${encode_log}" 2>&1 &
-    else
-        "${ENCODE_CMD[@]}" >"${encode_log}" 2>&1 &
-    fi
+        }' \
+        "${VISUAL_TOKEN_PRUNING_ARGS[@]}" \
+        >"${encode_log}" 2>&1 &
     PIDS+=($!)
 done
 
 
 declare -a PREFILL_ENV=("CUDA_VISIBLE_DEVICES=$GPU_P" "UCX_NET_DEVICES=all")
-if [[ "$PREFILL_SHARES_ENCODER_GPU" == "1" ]]; then
-    PREFILL_ENV+=(
-        "CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=$PD_MPS_ACTIVE_THREAD_PERCENTAGE"
-        "CUDA_DEVICE_MAX_CONNECTIONS=$PD_CUDA_DEVICE_MAX_CONNECTIONS"
-    )
-fi
 if [[ "$KV_CONNECTOR_NAME" == "NixlConnector" ]]; then
     PREFILL_ENV+=("VLLM_NIXL_SIDE_CHANNEL_PORT=$PREFILL_NIXL_SIDE_CHANNEL_PORT")
 fi
@@ -771,15 +680,8 @@ for idx in "${!DECODE_GPUS[@]}"; do
     decode_gpu="${DECODE_GPUS[$idx]}"
     decode_port="${DECODE_PORT_LIST[$idx]}"
     decode_log="${DECODE_LOGS[$idx]}"
-    decode_shares_encoder="${DECODE_SHARES_ENCODER_GPU[$idx]}"
 
     declare -a DECODE_ENV=("CUDA_VISIBLE_DEVICES=$decode_gpu" "UCX_NET_DEVICES=all")
-    if [[ "$decode_shares_encoder" == "1" ]]; then
-        DECODE_ENV+=(
-            "CUDA_MPS_ACTIVE_THREAD_PERCENTAGE=$PD_MPS_ACTIVE_THREAD_PERCENTAGE"
-            "CUDA_DEVICE_MAX_CONNECTIONS=$PD_CUDA_DEVICE_MAX_CONNECTIONS"
-        )
-    fi
     if [[ "$KV_CONNECTOR_NAME" == "NixlConnector" ]]; then
         DECODE_ENV+=("VLLM_NIXL_SIDE_CHANNEL_PORT=${DECODE_NIXL_PORT_LIST[$idx]}")
     fi

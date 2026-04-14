@@ -7,7 +7,7 @@ Usage:
   bash epdtest/sweep_compare.sh
 
 This script sweeps randommm runs across:
-  - 8 topology/GPU layouts
+  - 9 topology/GPU layouts
   - IMAGES_PER_REQ = 1, 2, 4, 8
 
 Fixed benchmark settings:
@@ -45,6 +45,7 @@ declare -a CASE_NAMES=(
     "Ne1p1d_e0-2_p1_d2"
     "Ne1p1d_e0-1-2_p1_d2"
     "Ne1p1d_pd_preempt_e0-1-2_p1_d2"
+    "Ne1pNd_e0-1_p1_d0-2"
     "Ne1pNd_pd_preempt_e0-1_p1_d0-2"
 )
 
@@ -56,6 +57,7 @@ declare -a CASE_TOPOLOGIES=(
     "Ne1p1d"
     "Ne1p1d"
     "Ne1p1d_pd_preempt"
+    "Ne1pNd"
     "Ne1pNd_pd_preempt"
 )
 
@@ -68,9 +70,11 @@ declare -a CASE_GPU_E=(
     "0,1,2"
     "0,1,2"
     "0,1"
+    "0,1"
 )
 
 declare -a CASE_GPU_P=(
+    "1"
     "1"
     "1"
     "1"
@@ -89,6 +93,7 @@ declare -a CASE_GPU_D=(
     "2"
     "2"
     "2"
+    "0,2"
     "0,2"
 )
 

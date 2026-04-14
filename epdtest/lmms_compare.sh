@@ -6,7 +6,7 @@ usage() {
 Usage:
   bash epdtest/lmms_compare.sh
 
-Runs LMMS evaluation across 8 topology/GPU cases:
+Runs LMMS evaluation across 9 topology/GPU cases:
   1) 1e1p1d (GPU_E=0 GPU_P=1 GPU_D=2)
   2) 1e1pNd (GPU_E=0 GPU_P=1 GPU_D=0,2)
   3) 1e1pNd_d_preempt (GPU_E=0 GPU_P=1 GPU_D=0,2)
@@ -14,7 +14,8 @@ Runs LMMS evaluation across 8 topology/GPU cases:
   5) Ne1p1d (GPU_E=0,2 GPU_P=1 GPU_D=2)
   6) Ne1p1d (GPU_E=0,1,2 GPU_P=1 GPU_D=2)
   7) Ne1p1d_pd_preempt (GPU_E=0,1,2 GPU_P=1 GPU_D=2)
-  8) Ne1pNd_pd_preempt (GPU_E=0,1 GPU_P=1 GPU_D=0,2)
+  8) Ne1pNd (GPU_E=0,1 GPU_P=1 GPU_D=0,2)
+  9) Ne1pNd_pd_preempt (GPU_E=0,1 GPU_P=1 GPU_D=0,2)
 
 Notes:
   - This script follows eval_lmms.sh conventions for LMMS options/env.
@@ -129,6 +130,7 @@ declare -a CASE_NAMES=(
     "Ne1p1d_e0-2_p1_d2"
     "Ne1p1d_e0-1-2_p1_d2"
     "Ne1p1d_pd_preempt_e0-1-2_p1_d2"
+    "Ne1pNd_e0-1_p1_d0-2"
     "Ne1pNd_pd_preempt_e0-1_p1_d0-2"
 )
 
@@ -140,6 +142,7 @@ declare -a CASE_TOPOLOGIES=(
     "Ne1p1d"
     "Ne1p1d"
     "Ne1p1d_pd_preempt"
+    "Ne1pNd"
     "Ne1pNd_pd_preempt"
 )
 
@@ -152,10 +155,11 @@ declare -a CASE_GPU_E=(
     "0,1,2"
     "0,1,2"
     "0,1"
+    "0,1"
 )
 
-declare -a CASE_GPU_P=("1" "1" "1" "1" "1" "1" "1" "1")
-declare -a CASE_GPU_D=("2" "0,2" "0,2" "2" "2" "2" "2" "0,2")
+declare -a CASE_GPU_P=("1" "1" "1" "1" "1" "1" "1" "1" "1")
+declare -a CASE_GPU_D=("2" "0,2" "0,2" "2" "2" "2" "2" "0,2" "0,2")
 
 CURRENT_GROUP_PID=""
 CURRENT_WRAPPER_DIR=""
@@ -471,40 +475,8 @@ run_lmms_eval_for_case() {
         }
     ' "$case_lmms_log" > "$case_table_log"
 
-    # Build a compact per-case key-metrics block for the merged summary.
-    # Throughput comes from LMMS table output; TTFT/TPOT are best-effort from
-    # case logs (often unavailable in lmms_compare mode due bench interception).
-    local mmmu_acc total_gen_tokens total_elapsed_time avg_speed mean_ttft mean_tpot
-    mmmu_acc="$(awk -F'|' '/\|mmmu_val\|/ {gsub(/[[:space:]]/, "", $7); print $7; exit}' "$case_table_log" || true)"
-    total_gen_tokens="$(awk -F'|' '/\|total_gen_tokens/ {gsub(/[[:space:]]/, "", $3); print $3; exit}' "$case_table_log" || true)"
-    total_elapsed_time="$(awk -F'|' '/\|total_elapsed_time/ {gsub(/[[:space:]]/, "", $3); print $3; exit}' "$case_table_log" || true)"
-    avg_speed="$(awk -F'|' '/\|avg_speed/ {gsub(/[[:space:]]/, "", $3); print $3; exit}' "$case_table_log" || true)"
-
-    mean_ttft="$(grep -hE "Mean TTFT \(ms\):" "$case_target_log" "$case_lmms_log" 2>/dev/null | tail -n1 | sed -E 's/.*Mean TTFT \(ms\):[[:space:]]*([0-9.]+).*/\1/' || true)"
-    mean_tpot="$(grep -hE "Mean TPOT \(ms\):" "$case_target_log" "$case_lmms_log" 2>/dev/null | tail -n1 | sed -E 's/.*Mean TPOT \(ms\):[[:space:]]*([0-9.]+).*/\1/' || true)"
-
-    [[ -n "$mmmu_acc" ]] || mmmu_acc="N/A"
-    [[ -n "$total_gen_tokens" ]] || total_gen_tokens="N/A"
-    [[ -n "$total_elapsed_time" ]] || total_elapsed_time="N/A"
-    [[ -n "$avg_speed" ]] || avg_speed="N/A"
-    [[ -n "$mean_ttft" ]] || mean_ttft="N/A"
-    [[ -n "$mean_tpot" ]] || mean_tpot="N/A"
-
     {
         echo "## ${case_name}"
-        echo
-        echo "### Key Metrics"
-        echo
-        echo "| Metric | Value |"
-        echo "|---|---:|"
-        echo "| mmmu_acc | ${mmmu_acc} |"
-        echo "| total_gen_tokens | ${total_gen_tokens} |"
-        echo "| total_elapsed_time (s) | ${total_elapsed_time} |"
-        echo "| avg_speed (tokens/s) | ${avg_speed} |"
-        echo "| Mean TTFT (ms) | ${mean_ttft} |"
-        echo "| Mean TPOT (ms) | ${mean_tpot} |"
-        echo
-        echo "### Raw Tables"
         echo
         cat "$case_table_log"
         echo
