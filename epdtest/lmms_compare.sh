@@ -63,16 +63,49 @@ EVAL_ROOT="${EVAL_OUTPUT_ROOT}/${RUN_STAMP}_compare"
 
 mkdir -p "$HF_HOME" "$HF_DATASETS_CACHE" "$HUGGINGFACE_HUB_CACHE" "$RUN_ROOT" "$EVAL_ROOT"
 
-if [[ -z "${LMMS_PYTHON_BIN:-}" ]]; then
-    if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
-        LMMS_PYTHON_BIN="${VIRTUAL_ENV}/bin/python"
-    elif [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
-        LMMS_PYTHON_BIN="$REPO_ROOT/.venv/bin/python"
-    elif command -v python3 >/dev/null 2>&1; then
-        LMMS_PYTHON_BIN="python3"
-    else
-        LMMS_PYTHON_BIN="python"
+python_supports_lmms_eval() {
+    local py="$1"
+    if [[ -z "$py" ]]; then
+        return 1
     fi
+    if [[ "$py" == */* ]]; then
+        [[ -x "$py" ]] || return 1
+    else
+        command -v "$py" >/dev/null 2>&1 || return 1
+    fi
+
+    "$py" - <<'PY' >/dev/null 2>&1
+import importlib.util
+import sys
+sys.exit(0 if importlib.util.find_spec("lmms_eval") is not None else 1)
+PY
+}
+
+declare -a LMMS_PY_CANDIDATES=()
+if [[ -n "${LMMS_PYTHON_BIN:-}" ]]; then
+    LMMS_PY_CANDIDATES+=("$LMMS_PYTHON_BIN")
+fi
+if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
+    LMMS_PY_CANDIDATES+=("${VIRTUAL_ENV}/bin/python")
+fi
+if [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
+    LMMS_PY_CANDIDATES+=("$REPO_ROOT/.venv/bin/python")
+fi
+LMMS_PY_CANDIDATES+=("python3" "python")
+
+LMMS_PYTHON_BIN=""
+for candidate in "${LMMS_PY_CANDIDATES[@]}"; do
+    if python_supports_lmms_eval "$candidate"; then
+        LMMS_PYTHON_BIN="$candidate"
+        break
+    fi
+done
+
+if [[ -z "$LMMS_PYTHON_BIN" ]]; then
+    echo "Could not find a Python with lmms_eval installed." >&2
+    echo "Install hint: .venv/bin/python -m pip install lmms-eval" >&2
+    echo "Or set LMMS_PYTHON_BIN to a Python that has lmms_eval." >&2
+    exit 2
 fi
 
 REAL_VLLM_BIN="${REAL_VLLM_BIN:-$REPO_ROOT/.venv/bin/vllm}"
@@ -293,11 +326,11 @@ run_lmms_eval_for_case() {
                 model_args="${model_args},api_key=${OPENAI_API_KEY}"
             fi
             if [[ "$model_args" == *"model="* ]]; then
-                model_args=$(echo "$model_args" | sed -E "s|model=[^,}]*|model=${MODEL}|g")
+                model_args=$(echo "$model_args" | sed -E "s|model=[^,}]*}?|model=${MODEL}|g")
             else
                 model_args="model=${MODEL},${model_args}"
             fi
-            if [[ "$model_args" == *"{MODEL"* || "$model_args" == *"{PORT"* ]]; then
+            if [[ "$model_args" == *"{MODEL"* || "$model_args" == *"{PORT"* || "$model_args" == *"{"* || "$model_args" == *"}"* ]]; then
                 model_args="$canonical_args"
             fi
             ;;
