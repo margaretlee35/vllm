@@ -6,16 +6,15 @@ usage() {
 Usage:
   bash epdtest/lmms_compare.sh
 
-Runs LMMS evaluation across 9 topology/GPU cases:
+Runs LMMS evaluation across 8 topology/GPU cases:
   1) 1e1p1d (GPU_E=0 GPU_P=1 GPU_D=2)
   2) 1e1pNd (GPU_E=0 GPU_P=1 GPU_D=0,2)
-  3) 1e1pNd (GPU_E=0 GPU_P=1 GPU_D=1,2)
-  4) 1e1pNd (GPU_E=0 GPU_P=1 GPU_D=0,1,2)
-  5) 1e1pNd_d_preempt (GPU_E=0 GPU_P=1 GPU_D=0,1,2)
-  6) Ne1p1d (GPU_E=0,1 GPU_P=1 GPU_D=2)
-  7) Ne1p1d (GPU_E=0,2 GPU_P=1 GPU_D=2)
-  8) Ne1p1d (GPU_E=0,1,2 GPU_P=1 GPU_D=2)
-  9) Ne1p1d_pd_preempt (GPU_E=0,1,2 GPU_P=1 GPU_D=2)
+  3) 1e1pNd_d_preempt (GPU_E=0 GPU_P=1 GPU_D=0,2)
+  4) Ne1p1d (GPU_E=0,1 GPU_P=1 GPU_D=2)
+  5) Ne1p1d (GPU_E=0,2 GPU_P=1 GPU_D=2)
+  6) Ne1p1d (GPU_E=0,1,2 GPU_P=1 GPU_D=2)
+  7) Ne1p1d_pd_preempt (GPU_E=0,1,2 GPU_P=1 GPU_D=2)
+  8) Ne1pNd_pd_preempt (GPU_E=0,1 GPU_P=1 GPU_D=0,2)
 
 Notes:
   - This script follows eval_lmms.sh conventions for LMMS options/env.
@@ -125,30 +124,26 @@ fi
 declare -a CASE_NAMES=(
     "1e1p1d_e0_p1_d2"
     "1e1pNd_e0_p1_d0-2"
-    "1e1pNd_e0_p1_d1-2"
-    "1e1pNd_e0_p1_d0-1-2"
-    "1e1pNd_d_preempt_e0_p1_d0-1-2"
+    "1e1pNd_d_preempt_e0_p1_d0-2"
     "Ne1p1d_e0-1_p1_d2"
     "Ne1p1d_e0-2_p1_d2"
     "Ne1p1d_e0-1-2_p1_d2"
     "Ne1p1d_pd_preempt_e0-1-2_p1_d2"
+    "Ne1pNd_pd_preempt_e0-1_p1_d0-2"
 )
 
 declare -a CASE_TOPOLOGIES=(
     "1e1p1d"
-    "1e1pNd"
-    "1e1pNd"
     "1e1pNd"
     "1e1pNd_d_preempt"
     "Ne1p1d"
     "Ne1p1d"
     "Ne1p1d"
     "Ne1p1d_pd_preempt"
+    "Ne1pNd_pd_preempt"
 )
 
 declare -a CASE_GPU_E=(
-    "0"
-    "0"
     "0"
     "0"
     "0"
@@ -156,10 +151,11 @@ declare -a CASE_GPU_E=(
     "0,2"
     "0,1,2"
     "0,1,2"
+    "0,1"
 )
 
-declare -a CASE_GPU_P=("1" "1" "1" "1" "1" "1" "1" "1" "1")
-declare -a CASE_GPU_D=("2" "0,2" "1,2" "0,1,2" "0,1,2" "2" "2" "2" "2")
+declare -a CASE_GPU_P=("1" "1" "1" "1" "1" "1" "1" "1")
+declare -a CASE_GPU_D=("2" "0,2" "0,2" "2" "2" "2" "2" "0,2")
 
 CURRENT_GROUP_PID=""
 CURRENT_WRAPPER_DIR=""

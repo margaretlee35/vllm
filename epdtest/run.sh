@@ -27,7 +27,7 @@ Usage:
   bash epdtest/run.sh [options]
 
 Options:
-  --topology 1e1pd|1e1p1d|1e1pNd|1e1pNd_d_preempt|Ne1p1d|Ne1p1d_pd_preempt|1ed1p
+  --topology 1e1pd|1e1p1d|1e1pNd|1e1pNd_d_preempt|Ne1p1d|Ne1p1d_pd_preempt|Ne1pNd_pd_preempt|1ed1p
   --benchmark simple|randommm
   --images-per-req N
   --visual-token-pruning-method visionzip|cdpruner|none
@@ -41,6 +41,7 @@ Examples:
   bash epdtest/run.sh --topology 1e1pNd_d_preempt --benchmark randommm
   bash epdtest/run.sh --topology Ne1p1d --benchmark randommm
   bash epdtest/run.sh --topology Ne1p1d_pd_preempt --benchmark randommm
+  bash epdtest/run.sh --topology Ne1pNd_pd_preempt --benchmark randommm
   bash epdtest/run.sh --topology 1ed1p --benchmark randommm
   bash epdtest/run.sh --benchmark randommm --images-per-req 4
   bash epdtest/run.sh --visual-token-pruning-method visionzip
@@ -117,11 +118,14 @@ validate_topology() {
         ne1p1d_pd_preempt)
             TOPOLOGY="Ne1p1d_pd_preempt"
             ;;
+        ne1pnd_pd_preempt)
+            TOPOLOGY="Ne1pNd_pd_preempt"
+            ;;
         1ed1p)
             TOPOLOGY="1ed1p"
             ;;
         *)
-            die "Unsupported topology: $TOPOLOGY"$'\n'"Supported topology values: 1e1pd, 1e1p1d, 1e1pNd, 1e1pNd_d_preempt, Ne1p1d, Ne1p1d_pd_preempt, 1ed1p"
+            die "Unsupported topology: $TOPOLOGY"$'\n'"Supported topology values: 1e1pd, 1e1p1d, 1e1pNd, 1e1pNd_d_preempt, Ne1p1d, Ne1p1d_pd_preempt, Ne1pNd_pd_preempt, 1ed1p"
             ;;
     esac
 }
