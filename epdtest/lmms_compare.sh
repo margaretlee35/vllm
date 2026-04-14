@@ -416,6 +416,7 @@ run_lmms_eval_for_case() {
             in_tput = 0
             found_tasks = 0
             found_tput = 0
+            seen_tput_row = 0
         }
         /^\| Tasks[[:space:]]*\|/ {
             in_tasks = 1
@@ -428,7 +429,7 @@ run_lmms_eval_for_case() {
                 print
                 next
             }
-            if ($0 ~ /^$/) {
+            if ($0 ~ /^[[:space:]]*$/) {
                 print ""
             }
             in_tasks = 0
@@ -439,17 +440,25 @@ run_lmms_eval_for_case() {
             }
             in_tput = 1
             found_tput = 1
+            seen_tput_row = 0
             print
             next
         }
         in_tput {
             if ($0 ~ /^\|/) {
                 print
+                seen_tput_row = 1
                 next
             }
-            if ($0 ~ /^$/) {
+            if ($0 ~ /^[[:space:]]*$/) {
+                # Keep blank lines, but do not terminate before table rows appear.
                 print ""
+                if (seen_tput_row) {
+                    in_tput = 0
+                }
+                next
             }
+            # Non-table, non-blank line ends throughput capture.
             in_tput = 0
         }
         END {
