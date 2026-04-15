@@ -30,6 +30,8 @@ ALLOW_TEARDOWN_SEGFAULT="${ALLOW_TEARDOWN_SEGFAULT:-1}"
 
 SWEEP_ROOT="$LOG_PATH/$RUN_STAMP/vtp_sweep"
 mkdir -p "$SWEEP_ROOT"
+TOTAL_RUNS=0
+FAIL_RUNS=0
 
 validate_method() {
   case "$1" in
@@ -76,6 +78,7 @@ run_one() {
     BENCHMARK="$BENCHMARK" \
     MODEL="$MODEL" \
     IMAGES_PER_REQ="$images_per_req" \
+    ENFORCE_EAGER="1" \
     GPU_E="$GPU_E" \
     GPU_P="$GPU_P" \
     GPU_D="$GPU_D" \
@@ -94,6 +97,7 @@ run_one() {
     BENCHMARK="$BENCHMARK" \
     MODEL="$MODEL" \
     IMAGES_PER_REQ="$images_per_req" \
+    ENFORCE_EAGER="1" \
     GPU_E="$GPU_E" \
     GPU_P="$GPU_P" \
     GPU_D="$GPU_D" \
@@ -122,6 +126,43 @@ run_one() {
   return "$rc"
 }
 
+launcher_log_for() {
+  local method="$1"
+  local images_per_req="$2"
+  local rate="${3:-}"
+  if [[ -n "$rate" ]]; then
+    local rate_tag="${rate//./p}"
+    echo "$SWEEP_ROOT/${method}/r${rate_tag}/ipr${images_per_req}/launcher.log"
+  else
+    echo "$SWEEP_ROOT/${method}/ipr${images_per_req}/launcher.log"
+  fi
+}
+
+run_with_handling() {
+  local method="$1"
+  local images_per_req="$2"
+  local rate="${3:-}"
+  local launcher_log
+  local cause=""
+
+  TOTAL_RUNS=$((TOTAL_RUNS + 1))
+  if run_one "$method" "$images_per_req" "$rate"; then
+    return 0
+  fi
+
+  FAIL_RUNS=$((FAIL_RUNS + 1))
+  launcher_log="$(launcher_log_for "$method" "$images_per_req" "$rate")"
+  if [[ -f "$launcher_log" ]]; then
+    cause="$(grep -Ei \
+      "Traceback|RuntimeError|ValueError|EngineCore failed|ERROR|address already in use|port collision|No CUDA runtime|out of memory|NIXL is not available|failed to start|cannot open shared object|Segfault|KeyError" \
+      "$launcher_log" 2>/dev/null | tail -n1 || true)"
+  fi
+  [[ -n "$cause" ]] || cause="unknown (see launcher log)"
+
+  echo "[fail] method=$method rate=${rate:-n/a} ipr=$images_per_req cause: $cause"
+  echo "       launcher: ${launcher_log#$REPO_ROOT/}"
+}
+
 echo "vtp_compare"
 echo "  topology            : $TOPOLOGY"
 echo "  model               : $MODEL"
@@ -129,6 +170,7 @@ echo "  benchmark           : $BENCHMARK"
 echo "  timeout_seconds     : $TIMEOUT_SECONDS"
 echo "  bench_request_rate  : $BENCH_REQUEST_RATE"
 echo "  bench_max_conc      : $BENCH_MAX_CONCURRENCY"
+echo "  enforce_eager       : 1 (fixed)"
 echo "  images_per_req_list : $IMAGES_PER_REQ_LIST"
 echo "  vtp_methods         : $VTP_METHODS"
 echo "  vtp_rates           : $VTP_RATES"
@@ -140,14 +182,14 @@ for method in $VTP_METHODS; do
   echo "=== METHOD=$method ==="
   if [[ "$method" == "none" ]]; then
     for images_per_req in $IMAGES_PER_REQ_LIST; do
-      run_one "$method" "$images_per_req"
+      run_with_handling "$method" "$images_per_req"
     done
   else
     for rate in $VTP_RATES; do
       validate_rate "$rate"
       echo "--- RATE=$rate ---"
       for images_per_req in $IMAGES_PER_REQ_LIST; do
-        run_one "$method" "$images_per_req" "$rate"
+        run_with_handling "$method" "$images_per_req" "$rate"
       done
     done
   fi
@@ -155,4 +197,10 @@ done
 
 echo
 echo "VTP sweep complete."
+echo "  total_runs : $TOTAL_RUNS"
+echo "  fail_runs  : $FAIL_RUNS"
 echo "Results root: ${SWEEP_ROOT#$REPO_ROOT/}"
+
+if [[ "$FAIL_RUNS" -gt 0 ]]; then
+  exit 1
+fi
