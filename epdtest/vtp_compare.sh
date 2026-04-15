@@ -20,7 +20,7 @@ IMAGES_PER_REQ_LIST="${IMAGES_PER_REQ_LIST:-1 2 4 8}"
 
 # Default sweep methods requested by user.
 VTP_METHODS="${VTP_METHODS:-none visionzip}"
-VTP_RATES="${VTP_RATES:-0.5 0.7 0.9}"
+VTP_RATES="${VTP_RATES:-0.3 0.5 0.7 0.9}"
 
 GPU_E="${GPU_E:-0}"
 GPU_P="${GPU_P:-1}"
