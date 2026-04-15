@@ -42,6 +42,13 @@ VISUAL_TOKEN_PRUNING_METHOD="${VISUAL_TOKEN_PRUNING_METHOD:-}"
 IMAGES_PER_REQ="${IMAGES_PER_REQ:-1}"
 HF_DATASET_PATH="${HF_DATASET_PATH:-lmarena-ai/VisionArena-Chat}"
 METRICS_SAMPLING_INTERVAL_SECONDS="${METRICS_SAMPLING_INTERVAL_SECONDS:-1}"
+ENFORCE_EAGER="${ENFORCE_EAGER:-0}"
+declare -a VLLM_EAGER_ARGS=()
+case "${ENFORCE_EAGER,,}" in
+    1|true|yes|on)
+        VLLM_EAGER_ARGS+=(--enforce-eager)
+        ;;
+esac
 
 die() {
     echo "$*" >&2
@@ -261,7 +268,7 @@ done
 CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
     --gpu-memory-utilization "$ENCODER_GPU_MEMORY_UTILIZATION" \
     --port "$ENCODE_PORT" \
-    --enforce-eager \
+    "${VLLM_EAGER_ARGS[@]}" \
     --enable-request-id-headers \
     --no-enable-prefix-caching \
     --max-num-batched-tokens 114688 \
@@ -282,7 +289,7 @@ CUDA_VISIBLE_DEVICES="$GPU_P" UCX_NET_DEVICES=all VLLM_NIXL_SIDE_CHANNEL_PORT="$
 vllm serve "$MODEL" \
     --gpu-memory-utilization "$PREFILL_GPU_MEMORY_UTILIZATION" \
     --port "$PREFILL_PORT" \
-    --enforce-eager \
+    "${VLLM_EAGER_ARGS[@]}" \
     --enable-request-id-headers \
     --max-model-len "$PD_MAX_MODEL_LEN" \
     --max-num-batched-tokens "$PD_MAX_NUM_BATCHED_TOKENS" \
@@ -307,7 +314,7 @@ CUDA_VISIBLE_DEVICES="$GPU_D" UCX_NET_DEVICES=all VLLM_NIXL_SIDE_CHANNEL_PORT="$
 vllm serve "$MODEL" \
     --gpu-memory-utilization "$DECODE_GPU_MEMORY_UTILIZATION" \
     --port "$DECODE_PORT" \
-    --enforce-eager \
+    "${VLLM_EAGER_ARGS[@]}" \
     --enable-request-id-headers \
     --max-model-len "$PD_MAX_MODEL_LEN" \
     --max-num-batched-tokens "$PD_MAX_NUM_BATCHED_TOKENS" \

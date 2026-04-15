@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Shared Ne1p1d runner with forced PD-over-encode preempt bias for both
+# Shared Ne1p1d runner with selective prefill-over-encode preempt bias for both
 # BENCHMARK=simple and BENCHMARK=randommm.
 # This topology runs:
 # - N encoder instances (E1..EN)
@@ -9,9 +9,7 @@ set -euo pipefail
 # - 1 decode instance (D)
 #
 # Multi-encoder is controlled via comma-separated GPU_E, e.g. GPU_E="0,2".
-# On GPUs shared between encoder and prefill/decode, this script always
-# deprioritizes encoder by applying lower process priority and lower CUDA
-# scheduler share for encoder processes.
+# This script deprioritizes encoder only when encoder shares the prefill GPU.
 
 # -----------------------------------------------------------------------------
 # Configuration defaults
@@ -59,6 +57,13 @@ VISUAL_TOKEN_PRUNING_METHOD="${VISUAL_TOKEN_PRUNING_METHOD:-}"
 IMAGES_PER_REQ="${IMAGES_PER_REQ:-1}"
 HF_DATASET_PATH="${HF_DATASET_PATH:-lmarena-ai/VisionArena-Chat}"
 METRICS_SAMPLING_INTERVAL_SECONDS="${METRICS_SAMPLING_INTERVAL_SECONDS:-1}"
+ENFORCE_EAGER="${ENFORCE_EAGER:-0}"
+declare -a VLLM_EAGER_ARGS=()
+case "${ENFORCE_EAGER,,}" in
+    1|true|yes|on)
+        VLLM_EAGER_ARGS+=(--enforce-eager)
+        ;;
+esac
 ENCODER_NICE="${ENCODER_NICE:-10}"
 ENCODER_MPS_ACTIVE_THREAD_PERCENTAGE="${ENCODER_MPS_ACTIVE_THREAD_PERCENTAGE:-20}"
 PD_MPS_ACTIVE_THREAD_PERCENTAGE="${PD_MPS_ACTIVE_THREAD_PERCENTAGE:-100}"
@@ -224,7 +229,7 @@ configure_pd_preempt_layout() {
     local gpu
     for idx in "${!ENCODE_GPUS[@]}"; do
         gpu="${ENCODE_GPUS[$idx]}"
-        if [[ "$gpu" == "$GPU_P" || "$gpu" == "$GPU_D" ]]; then
+        if [[ "$gpu" == "$GPU_P" ]]; then
             ENCODE_SHARED_WITH_PD+=(1)
             if ! contains_value "$gpu" "${shared_gpus[@]}"; then
                 shared_gpus+=("$gpu")
@@ -238,7 +243,7 @@ configure_pd_preempt_layout() {
         PREFILL_SHARES_ENCODER_GPU=1
     fi
 
-    if contains_value "$GPU_D" "${ENCODE_GPUS[@]}"; then
+    if [[ "$GPU_D" == "$GPU_P" && "$PREFILL_SHARES_ENCODER_GPU" == "1" ]]; then
         DECODE_SHARES_ENCODER_GPU=1
     fi
 
@@ -405,14 +410,14 @@ print_layout() {
     echo "  encoder_ports    : $(IFS=','; echo "${ENCODE_PORT_LIST[*]}")"
     echo "  gpu_prefill      : $GPU_P"
     echo "  gpu_decode       : $GPU_D"
-    echo "  pd_preempt_bias  : always (encode is deprioritized on shared GPUs)"
+    echo "  pd_preempt_bias  : prefill-shared only (encode is deprioritized only on prefill-shared GPU)"
     if [[ -n "$PREEMPT_SHARED_GPU_CSV" ]]; then
         echo "  shared_pd_e_gpus : $PREEMPT_SHARED_GPU_CSV"
         echo "  encoder_nice     : $ENCODER_NICE"
         echo "  encoder_mps_pct  : $ENCODER_MPS_ACTIVE_THREAD_PERCENTAGE"
         echo "  pd_mps_pct       : $PD_MPS_ACTIVE_THREAD_PERCENTAGE"
         if ! command -v nvidia-cuda-mps-control >/dev/null 2>&1; then
-            echo "  preempt_note     : CUDA MPS control not found; nice + CUDA_DEVICE_MAX_CONNECTIONS still apply."
+            echo "  preempt_note     : CUDA MPS control not found; selective nice + CUDA_DEVICE_MAX_CONNECTIONS still apply."
         fi
     else
         echo "  shared_pd_e_gpus : none"
@@ -574,7 +579,7 @@ for idx in "${!ENCODE_GPUS[@]}"; do
         vllm serve "$MODEL"
         --gpu-memory-utilization "$ENCODER_GPU_MEMORY_UTILIZATION"
         --port "$encode_port"
-        --enforce-eager
+        "${VLLM_EAGER_ARGS[@]}"
         --enable-request-id-headers
         --no-enable-prefix-caching
         --max-num-batched-tokens 114688
@@ -614,7 +619,7 @@ env "${PREFILL_ENV[@]}" \
 vllm serve "$MODEL" \
     --gpu-memory-utilization "$PREFILL_GPU_MEMORY_UTILIZATION" \
     --port "$PREFILL_PORT" \
-    --enforce-eager \
+    "${VLLM_EAGER_ARGS[@]}" \
     --enable-request-id-headers \
     --max-model-len "$PD_MAX_MODEL_LEN" \
     --max-num-batched-tokens "$PD_MAX_NUM_BATCHED_TOKENS" \
@@ -648,7 +653,7 @@ env "${DECODE_ENV[@]}" \
 vllm serve "$MODEL" \
     --gpu-memory-utilization "$DECODE_GPU_MEMORY_UTILIZATION" \
     --port "$DECODE_PORT" \
-    --enforce-eager \
+    "${VLLM_EAGER_ARGS[@]}" \
     --enable-request-id-headers \
     --max-model-len "$PD_MAX_MODEL_LEN" \
     --max-num-batched-tokens "$PD_MAX_NUM_BATCHED_TOKENS" \

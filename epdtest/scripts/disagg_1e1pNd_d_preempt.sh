@@ -59,6 +59,13 @@ VISUAL_TOKEN_PRUNING_METHOD="${VISUAL_TOKEN_PRUNING_METHOD:-}"
 IMAGES_PER_REQ="${IMAGES_PER_REQ:-1}"
 HF_DATASET_PATH="${HF_DATASET_PATH:-lmarena-ai/VisionArena-Chat}"
 METRICS_SAMPLING_INTERVAL_SECONDS="${METRICS_SAMPLING_INTERVAL_SECONDS:-1}"
+ENFORCE_EAGER="${ENFORCE_EAGER:-0}"
+declare -a VLLM_EAGER_ARGS=()
+case "${ENFORCE_EAGER,,}" in
+    1|true|yes|on)
+        VLLM_EAGER_ARGS+=(--enforce-eager)
+        ;;
+esac
 NON_DECODE_NICE="${NON_DECODE_NICE:-10}"
 NON_DECODE_MPS_ACTIVE_THREAD_PERCENTAGE="${NON_DECODE_MPS_ACTIVE_THREAD_PERCENTAGE:-20}"
 DECODE_MPS_ACTIVE_THREAD_PERCENTAGE="${DECODE_MPS_ACTIVE_THREAD_PERCENTAGE:-100}"
@@ -588,7 +595,7 @@ declare -a ENCODE_CMD=(
     vllm serve "$MODEL"
     --gpu-memory-utilization "$ENCODER_GPU_MEMORY_UTILIZATION"
     --port "$ENCODE_PORT"
-    --enforce-eager
+    "${VLLM_EAGER_ARGS[@]}"
     --enable-request-id-headers
     --no-enable-prefix-caching
     --max-num-batched-tokens 114688
@@ -628,7 +635,7 @@ declare -a PREFILL_CMD=(
     vllm serve "$MODEL"
     --gpu-memory-utilization "$PREFILL_GPU_MEMORY_UTILIZATION"
     --port "$PREFILL_PORT"
-    --enforce-eager
+    "${VLLM_EAGER_ARGS[@]}"
     --enable-request-id-headers
     --max-model-len "$PD_MAX_MODEL_LEN"
     --max-num-batched-tokens "$PD_MAX_NUM_BATCHED_TOKENS"
@@ -674,7 +681,7 @@ for idx in "${!DECODE_GPUS[@]}"; do
     vllm serve "$MODEL" \
         --gpu-memory-utilization "$DECODE_GPU_MEMORY_UTILIZATION" \
         --port "$decode_port" \
-        --enforce-eager \
+        "${VLLM_EAGER_ARGS[@]}" \
         --enable-request-id-headers \
         --max-model-len "$PD_MAX_MODEL_LEN" \
         --max-num-batched-tokens "$PD_MAX_NUM_BATCHED_TOKENS" \

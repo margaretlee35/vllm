@@ -6,7 +6,7 @@ REPO_ROOT=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)
 cd "$REPO_ROOT"
 
 MODEL="${MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}"
-LOG_PATH="${LOG_PATH:-$REPO_ROOT/epdtest/logs}"
+LOG_PATH="${LOG_PATH:-$REPO_ROOT/epdtest/logs/sweep}"
 RUN_STAMP="${RUN_STAMP:-$(date +"%Y%m%d_%H%M%S")}" 
 
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-600}"
