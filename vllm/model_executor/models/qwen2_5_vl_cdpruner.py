@@ -9,13 +9,32 @@ import torch.nn.functional as F
 _CDPRUNER_EPS = 1e-8
 
 
-def _compute_cdpruner_kernel(image_features: torch.Tensor) -> torch.Tensor:
+def _compute_cdpruner_kernel(
+    image_features: torch.Tensor,
+    text_embedding: torch.Tensor | None = None,
+) -> torch.Tensor:
     normalized_features = F.normalize(
         image_features.to(torch.float32),
         dim=-1,
         eps=_CDPRUNER_EPS,
     )
     kernel = torch.matmul(normalized_features, normalized_features.T).clamp(-1.0, 1.0)
+
+    if text_embedding is not None:
+        normalized_text = F.normalize(
+            text_embedding.to(torch.float32),
+            dim=-1,
+            eps=_CDPRUNER_EPS,
+        )
+        relevance = torch.matmul(normalized_features, normalized_text)
+        rel_min = relevance.min()
+        rel_range = relevance.max() - rel_min
+        if rel_range > _CDPRUNER_EPS:
+            relevance = (relevance - rel_min) / rel_range
+        else:
+            relevance = torch.ones_like(relevance)
+        kernel = relevance.unsqueeze(1) * kernel * relevance.unsqueeze(0)
+
     kernel = (kernel + kernel.T) * 0.5
     kernel.diagonal().clamp_(min=0.0)
     return kernel
@@ -56,6 +75,7 @@ def apply_qwen2_5_cdpruner(
     image_features: torch.Tensor,
     positions: torch.Tensor,
     keep_tokens: int,
+    text_embedding: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     num_tokens = image_features.shape[0]
     if num_tokens == 0:
@@ -65,7 +85,7 @@ def apply_qwen2_5_cdpruner(
     if keep_tokens >= num_tokens:
         return image_features, positions
 
-    kernel = _compute_cdpruner_kernel(image_features)
+    kernel = _compute_cdpruner_kernel(image_features, text_embedding=text_embedding)
     selected = _fast_greedy_dpp_select(kernel, keep_tokens).sort().values
     return (
         image_features.index_select(0, selected),

@@ -482,6 +482,10 @@ _MULTIMODAL_MODELS = {
         "qwen2_5_vl",
         "Qwen2_5_VLForConditionalGeneration",
     ),
+    "Qwen2_5_VLPruneForConditionalGeneration": (
+        "qwen2_5_vl_prune",
+        "Qwen2_5_VLPruneForConditionalGeneration",
+    ),
     "Qwen2AudioForConditionalGeneration": (
         "qwen2_audio",
         "Qwen2AudioForConditionalGeneration",

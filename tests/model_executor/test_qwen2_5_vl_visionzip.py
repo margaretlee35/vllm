@@ -105,3 +105,34 @@ def test_apply_qwen2_5_cdpruner_keeps_positions_in_token_order():
     assert compressed.shape == (2, 3)
     assert torch.equal(compressed, image_features[[0, 2]])
     assert torch.equal(compressed_positions, positions[[0, 2]])
+
+
+def test_apply_qwen2_5_cdpruner_text_conditioning_filters_irrelevant_token():
+    image_features = torch.tensor(
+        [
+            [1.0, 0.0],
+            [0.9, 0.1],
+            [0.0, 1.0],
+            [-1.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+    positions = torch.arange(16, dtype=torch.float32).view(4, 4)
+    mm_config = MultiModalConfig(
+        visual_token_pruning_method="cdpruner",
+        vt_prune_rate=0.5,
+    )
+    text_embedding = torch.tensor([1.0, 0.0], dtype=torch.float32)
+
+    compressed, _ = apply_qwen2_5_cdpruner(
+        image_features,
+        positions,
+        mm_config,
+        text_embedding=text_embedding,
+    )
+
+    irrelevant = image_features[3]
+    contains_irrelevant = torch.any(
+        torch.all(torch.isclose(compressed, irrelevant.unsqueeze(0)), dim=-1)
+    )
+    assert not contains_irrelevant

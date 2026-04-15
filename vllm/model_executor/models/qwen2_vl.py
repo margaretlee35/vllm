@@ -1247,6 +1247,7 @@ class Qwen2VLForConditionalGeneration(
         self.config = config
         self.multimodal_config = multimodal_config
         self.cd_prune = cd_prune
+        self.cd_pruner = SimpleCDPruner() if cd_prune else None
 
         with self._mark_tower_model(vllm_config, {"image", "video"}):
             self.visual = Qwen2VisionTransformer(
@@ -1398,15 +1399,21 @@ class Qwen2VLForConditionalGeneration(
                 image_input = modalities["images"]
                 image_embeddings = self._process_image_input(image_input)
                 if self.cd_prune:
-                    pruner = SimpleCDPruner()
-                    image_embeddings = tuple(pruner(emb) for emb in image_embeddings)
+                    pruner = self.cd_pruner
+                    assert pruner is not None
+                    image_embeddings = tuple(
+                        pruner(emb) for emb in image_embeddings
+                    )
                 multimodal_embeddings += tuple(image_embeddings)
             if modality == "videos":
                 video_input = modalities["videos"]
                 video_embeddings = self._process_video_input(video_input)
                 if self.cd_prune:
-                    pruner = SimpleCDPruner()
-                    video_embeddings = tuple(pruner(emb) for emb in video_embeddings)
+                    pruner = self.cd_pruner
+                    assert pruner is not None
+                    video_embeddings = tuple(
+                        pruner(emb) for emb in video_embeddings
+                    )
                 multimodal_embeddings += tuple(video_embeddings)
 
         return multimodal_embeddings

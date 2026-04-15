@@ -39,6 +39,7 @@ from vllm.multimodal.inputs import (
 )
 from vllm.multimodal.parse import MultiModalDataItems
 from vllm.multimodal.processing import PromptReplacement, PromptUpdate
+from vllm.pruning.prune_utils import CDPRUNER_TEXT_EMBEDDINGS_KEY
 
 from .qwen2_5_vl import (
     Qwen2_5_VLForConditionalGeneration,
@@ -140,6 +141,7 @@ def apply_qwen2_5_cdpruner(
     image_features: torch.Tensor,
     positions: torch.Tensor,
     mm_config: _VisualTokenPruneMultiModalConfig | None,
+    text_embedding: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     cdpruner_config = _get_qwen2_5_cdpruner_config(mm_config)
     if cdpruner_config is None:
@@ -153,6 +155,7 @@ def apply_qwen2_5_cdpruner(
         image_features,
         positions,
         keep_tokens,
+        text_embedding=text_embedding,
     )
 
 
@@ -166,7 +169,7 @@ def apply_qwen2_5_visual_token_pruning(
     pruning_method = _get_qwen2_5_visual_token_pruning_method(mm_config)
     if pruning_method is None:
         return image_features, positions
-    
+
     if pruning_method == "visionzip":
         return apply_qwen2_5_vision_zip(
             image_features,
@@ -175,14 +178,14 @@ def apply_qwen2_5_visual_token_pruning(
             positions,
             mm_config,
         )
-    
+
     if pruning_method == "cdpruner":
         return apply_qwen2_5_cdpruner(
             image_features,
             positions,
             mm_config,
         )
-    
+
     raise NotImplementedError(
         f"Unsupported Qwen2.5-VL visual-token pruning method: {pruning_method!r}"
     )
@@ -825,11 +828,16 @@ class Qwen2_5_VLPruneForConditionalGeneration(
             )
 
     def _process_image_input_by_method(
-        self, image_input: Qwen2_5_VLImageInputs
+        self,
+        image_input: Qwen2_5_VLImageInputs,
+        *,
+        cdpruner_text_embeddings: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, ...]:
         if self._prune_impl_cls is not None:
             return self._prune_impl_cls._process_image_input_for_pruning(
-                self, image_input
+                self,
+                image_input,
+                text_embeddings=cdpruner_text_embeddings,
             )
 
         image_embeddings = self._process_image_input(image_input)
@@ -856,6 +864,10 @@ class Qwen2_5_VLPruneForConditionalGeneration(
         return tuple(video_embeddings)
 
     def embed_multimodal(self, **kwargs: object):
+        cdpruner_text_embeddings = cast(
+            torch.Tensor | None,
+            kwargs.pop(CDPRUNER_TEXT_EMBEDDINGS_KEY, None),
+        )
         mm_input_by_modality = self._parse_and_validate_multimodal_inputs(**kwargs)
         if not mm_input_by_modality:
             return []
@@ -864,7 +876,8 @@ class Qwen2_5_VLPruneForConditionalGeneration(
         for modality, multimodal_input in mm_input_by_modality.items():
             if modality == "image":
                 multimodal_embeddings += self._process_image_input_by_method(
-                    multimodal_input
+                    multimodal_input,
+                    cdpruner_text_embeddings=cdpruner_text_embeddings,
                 )
             elif modality == "video":
                 multimodal_embeddings += self._process_video_input_by_method(
@@ -949,7 +962,10 @@ class Qwen2_5_VLVisionZipForConditionalGeneration(
     def _process_image_input_for_pruning(
         model: Qwen2_5_VLPruneForConditionalGeneration,
         image_input: Qwen2_5_VLImageInputs,
+        *,
+        text_embeddings: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, ...]:
+        del text_embeddings
         if image_input["type"] == "image_embeds":
             raise ValueError(
                 "Qwen2.5-VL VisionZip currently requires `pixel_values`; "
@@ -1024,19 +1040,41 @@ class Qwen2_5_VLCDPruneForConditionalGeneration(
     def _process_image_input_for_pruning(
         model: Qwen2_5_VLPruneForConditionalGeneration,
         image_input: Qwen2_5_VLImageInputs,
+        *,
+        text_embeddings: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, ...]:
         image_embeds_split = model._process_image_input(image_input)
         merge_size = model.visual.spatial_merge_size
         grid_thw = image_input["image_grid_thw"]
         grid_thw_list = grid_thw.tolist()
 
+        if text_embeddings is not None:
+            if text_embeddings.ndim != 2:
+                raise ValueError(
+                    "CDPruner text embeddings must be a 2D tensor with shape "
+                    f"(num_items, hidden_size), got {tuple(text_embeddings.shape)}."
+                )
+            num_items = len(image_embeds_split)
+            if text_embeddings.shape[0] not in (1, num_items):
+                raise ValueError(
+                    "CDPruner text embedding batch dimension must be 1 or match "
+                    f"num image items ({num_items}), got {text_embeddings.shape[0]}."
+                )
+            if text_embeddings.shape[0] == 1 and num_items > 1:
+                text_embeddings = text_embeddings.expand(num_items, -1)
+
         image_embeds_out = []
-        for emb, size in zip(image_embeds_split, grid_thw_list):
+        for idx, (emb, size) in enumerate(zip(image_embeds_split, grid_thw_list)):
             positions = compute_mrope_for_media(size, merge_size).to(emb.device)
             emb, positions = apply_qwen2_5_cdpruner(
                 emb,
                 positions,
                 model.cdpruner_config,
+                text_embedding=(
+                    None
+                    if text_embeddings is None
+                    else text_embeddings[idx].to(emb.device)
+                ),
             )
             image_embeds_out.append(torch.cat([emb, positions], dim=1))
         return tuple(image_embeds_out)

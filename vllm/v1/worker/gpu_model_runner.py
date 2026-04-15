@@ -92,6 +92,7 @@ from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.multimodal.encoder_budget import MultiModalBudget
 from vllm.multimodal.inputs import (
     BatchedTensorInputs,
+    MultiModalFeatureSpec,
     MultiModalKwargsItem,
     PlaceholderRange,
 )
@@ -100,6 +101,7 @@ from vllm.platforms import current_platform
 from vllm.pooling_params import PoolingParams
 from vllm.sampling_params import SamplingType
 from vllm.sequence import IntermediateTensors
+from vllm.pruning.prune_utils import CDPRUNER_TEXT_EMBEDDINGS_KEY
 from vllm.tasks import GenerationTask, PoolingTask, SupportedTask
 from vllm.tracing import instrument
 from vllm.utils import length_from_prompt_token_ids_or_embeds
@@ -2466,6 +2468,70 @@ class GPUModelRunner(
         ]
         return logits_indices_padded
 
+    @staticmethod
+    def _get_cdpruner_instruction_token_ids(
+        prompt_token_ids: list[int],
+        mm_features: list[MultiModalFeatureSpec],
+    ) -> list[int]:
+        is_instruction_token = [True] * len(prompt_token_ids)
+        for mm_feature in mm_features:
+            start_idx = max(0, mm_feature.mm_position.offset)
+            end_idx = min(
+                len(prompt_token_ids),
+                mm_feature.mm_position.offset + mm_feature.mm_position.length,
+            )
+            for idx in range(start_idx, end_idx):
+                is_instruction_token[idx] = False
+
+        instruction_token_ids = [
+            token_id
+            for token_id, is_instruction in zip(prompt_token_ids, is_instruction_token)
+            if is_instruction
+        ]
+        if not instruction_token_ids:
+            instruction_token_ids = prompt_token_ids
+
+        return instruction_token_ids
+
+    def _get_cdpruner_text_embeddings_for_mm_items(
+        self,
+        mm_lora_refs: list[tuple[str, PlaceholderRange]],
+    ) -> list[torch.Tensor] | None:
+        mm_config = self.model_config.multimodal_config
+        if mm_config is None or not mm_config.is_cdpruner_enabled():
+            return None
+
+        model = cast(SupportsMultiModal, self.model)
+        req_to_instruction_emb: dict[str, torch.Tensor] = {}
+        instruction_embs = list[torch.Tensor]()
+        for req_id, _ in mm_lora_refs:
+            request_instruction_emb = req_to_instruction_emb.get(req_id)
+            if request_instruction_emb is None:
+                req_state = self.requests[req_id]
+                prompt_token_ids = req_state.prompt_token_ids
+                if prompt_token_ids is None:
+                    raise ValueError(
+                        "CDPruner requires prompt_token_ids to compute "
+                        "instruction-conditioned text embeddings."
+                    )
+                instruction_token_ids = self._get_cdpruner_instruction_token_ids(
+                    prompt_token_ids,
+                    req_state.mm_features,
+                )
+                token_ids_tensor = torch.tensor(
+                    instruction_token_ids,
+                    dtype=torch.long,
+                    device=self.device,
+                )
+                request_instruction_emb = model.embed_input_ids(
+                    input_ids=token_ids_tensor
+                ).mean(dim=0)
+                req_to_instruction_emb[req_id] = request_instruction_emb
+
+            instruction_embs.append(request_instruction_emb)
+
+        return instruction_embs
+
     def _batch_mm_inputs_from_scheduler(
         self,
         scheduler_output: "SchedulerOutput",
@@ -2523,6 +2589,9 @@ class GPUModelRunner(
             self.observability_config
             and self.observability_config.enable_mm_processor_stats
             and scheduler_output.scheduled_encoder_inputs
+        )
+        cdpruner_text_embeddings = self._get_cdpruner_text_embeddings_for_mm_items(
+            mm_lora_refs
         )
 
         # Batch mm inputs as much as we can: if a request in the batch has
@@ -2647,6 +2716,14 @@ class GPUModelRunner(
                 with self.timed_encoder_operation(
                     should_time, mm_lora_refs, current_item_idx, num_items
                 ):
+                    if cdpruner_text_embeddings is not None and modality == "image":
+                        mm_kwargs_batch = dict(mm_kwargs_batch)
+                        mm_kwargs_batch[CDPRUNER_TEXT_EMBEDDINGS_KEY] = torch.stack(
+                            cdpruner_text_embeddings[
+                                current_item_idx : current_item_idx + num_items
+                            ],
+                            dim=0,
+                        )
                     batch_outputs = model.embed_multimodal(**mm_kwargs_batch)
 
             sanity_check_mm_encoder_outputs(batch_outputs, expected_num_items=num_items)

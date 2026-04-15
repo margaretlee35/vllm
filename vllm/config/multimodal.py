@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import os
 from collections.abc import Mapping
 from typing import Any, Literal, TypeAlias, TypedDict, final
 
@@ -59,6 +60,7 @@ class MultiModalDummyOptionsBuiltins(TypedDict, total=False):
 
 MMEncoderTPMode = Literal["weights", "data"]
 MMCacheType = Literal["shm", "lru"]
+VisualTokenPruningMethod = Literal["visionzip", "cdpruner"]
 MMDummyOptions: TypeAlias = dict[str, BaseDummyOptions]
 """
 A dictionary containing an entry for each modality type of dummy data.
@@ -99,8 +101,8 @@ class MultiModalConfig:
     `"type": "*_embeds"`.
 
     When enabled with `--limit-mm-per-prompt` set to 0 for a modality,
-    precomputed embeddings skip count validation for that modality, 
-    saving memory by not loading encoder modules while still enabling 
+    precomputed embeddings skip count validation for that modality,
+    saving memory by not loading encoder modules while still enabling
     embeddings as an input. Limits greater than 0 still apply to embeddings.
 
     WARNING: The vLLM engine may crash if incorrect shape of embeddings is passed.
@@ -172,6 +174,23 @@ class MultiModalConfig:
     Value sits in range [0;1) and determines fraction of media tokens
     from each video to be pruned.
     """
+    visual_token_pruning_method: VisualTokenPruningMethod | None = None
+    """Selects the image-token pruning method used by prune-enabled wrappers.
+
+    If unset while `vt_prune_rate > 0`, defaults to `visionzip`."""
+    vt_prune_rate: float | None = Field(default=None, ge=0.0, lt=1.0)
+    """Sets the image-token pruning rate used by visual-token pruning methods.
+    The value determines the fraction of selected visual tokens pruned before
+    they are projected into the language model."""
+    vision_zip_dominant_ratio: float = Field(default=54.0 / 64.0, gt=0.0, le=1.0)
+    """Fraction of kept VisionZip tokens reserved for dominant tokens chosen
+    from model-specific attention scores. Remaining kept tokens are contextual
+    tokens produced by metric-based merging."""
+    vision_zip_attention_layer: int = -2
+    """Vision encoder layer index used to gather token-importance metadata and key
+    states for VisionZip compression. Negative values are relative to depth."""
+    cdpruner_debug: bool = False
+    """Reserved debug toggle for a future CDPruner implementation."""
 
     @field_validator("limit_per_prompt", mode="before")
     @classmethod
@@ -217,8 +236,70 @@ class MultiModalConfig:
         )
         return AttentionBackendEnum[value.upper()]
 
+    @field_validator("visual_token_pruning_method", mode="before")
+    @classmethod
+    def _validate_visual_token_pruning_method(
+        cls, value: str | VisualTokenPruningMethod | None
+    ) -> VisualTokenPruningMethod | None:
+        if value is None:
+            value = os.getenv("VISUAL_TOKEN_PRUNING_METHOD")
+        if value is None:
+            return None
+
+        method = value.strip().lower()
+        if method in ("", "none", "noprune", "no_prune"):
+            return None
+        if method == "visionzip":
+            return "visionzip"
+        if method in ("cdpruner", "cdprune"):
+            return "cdpruner"
+
+        raise ValueError(
+            "visual_token_pruning_method must be one of: "
+            "'visionzip' or 'cdpruner'."
+        )
+
+    @staticmethod
+    def _parse_visual_token_pruning_rate(
+        value: float | str | None,
+    ) -> float | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            value = value.strip()
+            if value == "":
+                return None
+
+        rate = float(value)
+        if not 0.0 <= rate < 1.0:
+            raise ValueError(
+                "VISUAL_TOKEN_PRUNING_RATE/'vt_prune_rate' must be within [0, 1)."
+            )
+        return rate
+
+    @field_validator("vt_prune_rate", mode="before")
+    @classmethod
+    def _validate_vt_prune_rate(
+        cls, value: float | str | None
+    ) -> float | None:
+        if value is None:
+            value = os.getenv("VISUAL_TOKEN_PRUNING_RATE")
+        return cls._parse_visual_token_pruning_rate(value)
+
     @model_validator(mode="after")
     def _validate_multimodal_config(self):
+        if self.visual_token_pruning_method is None:
+            self.visual_token_pruning_method = (
+                self._validate_visual_token_pruning_method(
+                    os.getenv("VISUAL_TOKEN_PRUNING_METHOD")
+                )
+            )
+
+        if self.vt_prune_rate is None:
+            self.vt_prune_rate = self._parse_visual_token_pruning_rate(
+                os.getenv("VISUAL_TOKEN_PRUNING_RATE")
+            )
+
         if self.mm_processor_cache_type != "shm" and (
             self.mm_shm_cache_max_object_size_mb
             != MultiModalConfig.mm_shm_cache_max_object_size_mb
@@ -226,6 +307,22 @@ class MultiModalConfig:
             raise ValueError(
                 "'mm_shm_cache_max_object_size_mb' should only be set when "
                 "'mm_processor_cache_type' is 'shm'."
+            )
+        if (
+            self.visual_token_pruning_method == "visionzip"
+            and not self.is_vision_zip_enabled()
+        ):
+            raise ValueError(
+                "'visual_token_pruning_method=\"visionzip\"' requires "
+                "'vt_prune_rate' to be set to a value greater than 0."
+            )
+        if (
+            self.visual_token_pruning_method == "cdpruner"
+            and not self.is_cdpruner_enabled()
+        ):
+            raise ValueError(
+                "'visual_token_pruning_method=\"cdpruner\"' requires "
+                "'vt_prune_rate' to be set to a value greater than 0."
             )
         return self
 
@@ -246,6 +343,10 @@ class MultiModalConfig:
             if self.mm_encoder_attn_backend is not None
             else None,
             self.mm_encoder_tp_mode,
+            self.visual_token_pruning_method,
+            self.vt_prune_rate,
+            self.vision_zip_dominant_ratio,
+            self.vision_zip_attention_layer,
         ]
         hash_str = safe_hash(str(factors).encode(), usedforsecurity=False).hexdigest()
         return hash_str
@@ -279,3 +380,28 @@ class MultiModalConfig:
 
     def is_multimodal_pruning_enabled(self):
         return self.video_pruning_rate is not None and self.video_pruning_rate > 0
+
+    def is_vision_zip_enabled(self) -> bool:
+        return (
+            self.vt_prune_rate is not None
+            and self.vt_prune_rate > 0
+            and self.get_visual_token_pruning_method() == "visionzip"
+        )
+
+    def is_cdpruner_enabled(self) -> bool:
+        return (
+            self.vt_prune_rate is not None
+            and self.vt_prune_rate > 0
+            and self.get_visual_token_pruning_method() == "cdpruner"
+        )
+
+    def is_cd_pruning_enabled(self) -> bool:
+        # Backward-compat alias used by older call sites.
+        return self.is_cdpruner_enabled()
+
+    def get_visual_token_pruning_method(self) -> VisualTokenPruningMethod | None:
+        if self.visual_token_pruning_method is not None:
+            return self.visual_token_pruning_method
+        if self.vt_prune_rate is not None and self.vt_prune_rate > 0:
+            return "visionzip"
+        return None

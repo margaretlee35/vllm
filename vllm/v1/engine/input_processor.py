@@ -29,6 +29,7 @@ from vllm.sampling_params import SamplingParams
 from vllm.tasks import GENERATION_TASKS, POOLING_TASKS, SupportedTask
 from vllm.tokenizers import TokenizerLike
 from vllm.utils import length_from_prompt_token_ids_or_embeds, random_uuid
+from vllm.utils.hashing import safe_hash
 from vllm.utils.jsontree import json_iter_leaves
 from vllm.v1.engine import EngineCoreRequest
 
@@ -150,19 +151,48 @@ class InputProcessor:
         self,
         mm_hash: str,
         lora_request: LoRARequest | None,
+        instruction_hash: str | None = None,
     ) -> str:
         """
         When enable_tower_connector_lora is True, multi-modal embeddings
         vary depending on the LoRA request. Therefore, the mm_hash must be
         generated based on the LoRA request to prevent incorrect cache hits.
         """
+        identifier = mm_hash
+        if instruction_hash is not None:
+            identifier = f"{identifier}:cdp={instruction_hash}"
+
         if (
             lora_request is None
             or self.lora_config is None
             or not self.lora_config.enable_tower_connector_lora
         ):
-            return mm_hash
-        return f"{lora_request.lora_name}:{mm_hash}"
+            return identifier
+        return f"{lora_request.lora_name}:{identifier}"
+
+    @staticmethod
+    def _get_cd_pruner_instruction_hash(
+        prompt_token_ids: list[int],
+        mm_positions: Mapping[str, list[Any]],
+    ) -> str:
+        is_instruction_token = [True] * len(prompt_token_ids)
+        for placeholders in mm_positions.values():
+            for placeholder in placeholders:
+                start_idx = max(0, placeholder.offset)
+                end_idx = min(len(prompt_token_ids), placeholder.offset + placeholder.length)
+                for idx in range(start_idx, end_idx):
+                    is_instruction_token[idx] = False
+
+        instruction_token_ids = [
+            token_id
+            for token_id, is_instruction in zip(prompt_token_ids, is_instruction_token)
+            if is_instruction
+        ]
+        if not instruction_token_ids:
+            instruction_token_ids = prompt_token_ids
+
+        payload = " ".join(str(token_id) for token_id in instruction_token_ids).encode()
+        return safe_hash(payload, usedforsecurity=False).hexdigest()
 
     @staticmethod
     def assign_request_id(request: EngineCoreRequest):
@@ -293,6 +323,16 @@ class InputProcessor:
             # from dictionaries to lists, and sort them by each item's position
             # in the input sequence.
             sorted_mm_idxs = argsort_mm_positions(decoder_mm_positions)
+            instruction_hash: str | None = None
+            mm_config = self.model_config.multimodal_config
+            if mm_config is not None and mm_config.is_cdpruner_enabled():
+                if prompt_token_ids is None:
+                    raise ValueError(
+                        "CDPruner requires tokenized prompt inputs (prompt_token_ids)."
+                    )
+                instruction_hash = self._get_cd_pruner_instruction_hash(
+                    prompt_token_ids, decoder_mm_positions
+                )
 
             mm_features = []
             for modality, idx in sorted_mm_idxs:
@@ -304,6 +344,7 @@ class InputProcessor:
                         identifier=self._get_mm_identifier(
                             base_mm_hash,
                             lora_request,
+                            instruction_hash=instruction_hash,
                         ),
                         mm_position=decoder_mm_positions[modality][idx],
                         mm_hash=base_mm_hash,

@@ -9,7 +9,7 @@ from vllm.pruning.prune_utils import SimpleCDPruner
 
 def test_simple_cd_pruner_shape_2d():
     embeddings = torch.randn(10, 16)
-    pruner = SimpleCDPruner(keep_ratio=0.4, temperature=0.2)
+    pruner = SimpleCDPruner(keep_ratio=0.4)
 
     pruned = pruner(embeddings)
 
@@ -18,7 +18,7 @@ def test_simple_cd_pruner_shape_2d():
 
 def test_simple_cd_pruner_shape_3d():
     embeddings = torch.randn(3, 12, 8)
-    pruner = SimpleCDPruner(keep_ratio=0.25, temperature=0.2)
+    pruner = SimpleCDPruner(keep_ratio=0.25)
 
     pruned = pruner(embeddings)
 
@@ -27,7 +27,7 @@ def test_simple_cd_pruner_shape_3d():
 
 def test_simple_cd_pruner_keep_ratio_one_returns_original():
     embeddings = torch.randn(2, 7, 5)
-    pruner = SimpleCDPruner(keep_ratio=1.0, temperature=0.2)
+    pruner = SimpleCDPruner(keep_ratio=1.0)
 
     pruned = pruner(embeddings)
 
@@ -44,7 +44,7 @@ def test_simple_cd_pruner_relevance_conditioning_suppresses_irrelevant_token():
         ]
     )
     text_embedding = torch.tensor([1.0, 0.0])
-    pruner = SimpleCDPruner(keep_ratio=0.5, temperature=0.5)
+    pruner = SimpleCDPruner(keep_ratio=0.5)
 
     pruned = pruner(embeddings, text_embedding)
 
@@ -58,7 +58,7 @@ def test_simple_cd_pruner_relevance_conditioning_suppresses_irrelevant_token():
 def test_simple_cd_pruner_reproducible_for_same_input():
     torch.manual_seed(0)
     embeddings = torch.randn(20, 6)
-    pruner = SimpleCDPruner(keep_ratio=0.5, temperature=0.2)
+    pruner = SimpleCDPruner(keep_ratio=0.5)
 
     pruned_first = pruner(embeddings)
     pruned_second = pruner(embeddings)
@@ -67,26 +67,22 @@ def test_simple_cd_pruner_reproducible_for_same_input():
 
 
 @pytest.mark.parametrize(
-    ("keep_ratio", "temperature"),
+    "keep_ratio",
     [
-        (0.0, 0.1),
-        (-0.1, 0.1),
-        (1.1, 0.1),
-        (0.5, 0.0),
-        (0.5, -1.0),
+        0.0,
+        -0.1,
+        1.1,
     ],
 )
-def test_simple_cd_pruner_invalid_constructor_args(
-    keep_ratio: float, temperature: float
-):
+def test_simple_cd_pruner_invalid_constructor_args(keep_ratio: float):
     with pytest.raises(ValueError):
-        SimpleCDPruner(keep_ratio=keep_ratio, temperature=temperature)
+        SimpleCDPruner(keep_ratio=keep_ratio)
 
 
 def test_simple_cd_pruner_invalid_text_batch_size_raises():
     embeddings = torch.randn(2, 10, 4)
     text_embeddings = torch.randn(3, 4)
-    pruner = SimpleCDPruner(keep_ratio=0.5, temperature=0.2)
+    pruner = SimpleCDPruner(keep_ratio=0.5)
 
     with pytest.raises(ValueError):
         pruner(embeddings, text_embeddings)
