@@ -348,28 +348,64 @@ summarize_vtp() {
             fails=$((fails + 1))
         fi
 
-        echo "- method=${method} rate=${rate} ${ipr}: ${status} (failed_req=${failed_req}, req/s=${req_tput}, tok/s=${out_tput}, ttft=${mean_ttft}, tpot=${mean_tpot})"
-        if [[ -n "$error_line" ]]; then
-            echo "  cause: $error_line"
-            echo "  launcher: ${launcher_log#$REPO_ROOT/}"
-            if [[ -f "$target_log" ]]; then
-                echo "  target: ${target_log#$REPO_ROOT/}"
-            fi
+        error_line="${error_line//$'\t'/ }"
+        local launcher_rel target_rel
+        launcher_rel="${launcher_log#$REPO_ROOT/}"
+        target_rel="-"
+        if [[ -f "$target_log" ]]; then
+            target_rel="${target_log#$REPO_ROOT/}"
         fi
 
-        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-            "$method" "$rate" "$ipr" "$status" "$mean_ttft" "$mean_tpot" "$req_tput" "$out_tput" "$total_tput" >> "$compare_tmp"
+        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+            "$method" "$rate" "$ipr" "$status" "$mean_ttft" "$mean_tpot" "$req_tput" "$out_tput" "$total_tput" "$failed_req" "$error_line" "$launcher_rel" "$target_rel" >> "$compare_tmp"
     done < <(find "$root" -mindepth 2 -maxdepth 3 -type d -name "ipr*" | sort)
 
     if [[ -s "$compare_tmp" ]]; then
+        local sorted_tmp
+        sorted_tmp="$(mktemp)"
+        awk -F'\t' '
+            function ipr_rank(ipr, v) {
+                if (ipr == "ipr1") return 1
+                if (ipr == "ipr2") return 2
+                if (ipr == "ipr4") return 4
+                if (ipr == "ipr8") return 8
+                if (ipr ~ /^ipr[0-9]+$/) {
+                    v = ipr
+                    sub(/^ipr/, "", v)
+                    return v + 0
+                }
+                return 9999
+            }
+            function rate_rank(rate) {
+                if (rate == "-") return -1
+                return rate + 0
+            }
+            {
+                # sort by ipr -> method -> rate
+                printf "%06d\t%s\t%010.4f\t%s\n", ipr_rank($3), $1, rate_rank($2), $0
+            }
+        ' "$compare_tmp" | sort -t$'\t' -k1,1n -k2,2 -k3,3n | cut -f4- > "$sorted_tmp"
+
+        while IFS=$'\t' read -r method rate ipr status mean_ttft mean_tpot req_tput out_tput total_tput failed_req error_line launcher_rel target_rel; do
+            echo "- method=${method} rate=${rate} ${ipr}: ${status} (failed_req=${failed_req}, req/s=${req_tput}, tok/s=${out_tput}, ttft=${mean_ttft}, tpot=${mean_tpot})"
+            if [[ -n "$error_line" ]]; then
+                echo "  cause: $error_line"
+                echo "  launcher: $launcher_rel"
+                if [[ -n "$target_rel" && "$target_rel" != "-" ]]; then
+                    echo "  target: $target_rel"
+                fi
+            fi
+        done < "$sorted_tmp"
+
         echo
         echo "### VTP TTFT/TPOT/Throughput Comparison"
         echo
         echo "| method | rate | ipr | status | Mean TTFT (ms) | Mean TPOT (ms) | req/s | out tok/s | total tok/s |"
         echo "|---|---:|---:|---|---:|---:|---:|---:|---:|"
-        while IFS=$'\t' read -r c_method c_rate c_ipr c_status c_ttft c_tpot c_req c_out c_total; do
+        while IFS=$'\t' read -r c_method c_rate c_ipr c_status c_ttft c_tpot c_req c_out c_total _c_failed _c_error _c_launcher _c_target; do
             echo "| ${c_method} | ${c_rate} | ${c_ipr} | ${c_status} | ${c_ttft} | ${c_tpot} | ${c_req} | ${c_out} | ${c_total} |"
-        done < "$compare_tmp"
+        done < "$sorted_tmp"
+        rm -f "$sorted_tmp"
     fi
     rm -f "$compare_tmp"
 
