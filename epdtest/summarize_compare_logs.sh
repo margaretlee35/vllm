@@ -39,6 +39,7 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)
 
 find_latest_lmms_root() {
+    ls -1dt "$REPO_ROOT"/epdtest/logs/lmms/* 2>/dev/null | head -n1 || \
     ls -1dt "$REPO_ROOT"/epdtest/logs/lmms/*_compare 2>/dev/null | head -n1 || \
     ls -1dt "$REPO_ROOT"/epdtest/lmms_eval/*_compare 2>/dev/null | head -n1 || true
 }
@@ -54,7 +55,10 @@ find_latest_vtp_root() {
 }
 
 if [[ -n "$RUN_STAMP" ]]; then
-    LMMS_ROOT_DEFAULT="$REPO_ROOT/epdtest/logs/lmms/${RUN_STAMP}_compare"
+    LMMS_ROOT_DEFAULT="$REPO_ROOT/epdtest/logs/lmms/${RUN_STAMP}"
+    if [[ ! -d "$LMMS_ROOT_DEFAULT" ]]; then
+        LMMS_ROOT_DEFAULT="$REPO_ROOT/epdtest/logs/lmms/${RUN_STAMP}_compare"
+    fi
     SWEEP_ROOT_DEFAULT="$REPO_ROOT/epdtest/logs/sweep/${RUN_STAMP}/compare"
     VTP_ROOT_DEFAULT="$REPO_ROOT/epdtest/logs/vtp/${RUN_STAMP}/vtp_sweep"
 else
@@ -79,10 +83,15 @@ SUMMARY_FILE="${SUMMARY_FILE:-$SUMMARY_FILE_DEFAULT}"
 
 extract_error_line_from_files() {
     local error_line=""
-    if [[ $# -gt 0 ]]; then
+    local -a existing_files=()
+    local f
+    for f in "$@"; do
+        [[ -f "$f" ]] && existing_files+=("$f")
+    done
+    if [[ ${#existing_files[@]} -gt 0 ]]; then
         error_line=$(grep -hEi \
             "Traceback|RuntimeError|ValueError|NVMLError|EngineCore failed|ERROR|address already in use|No CUDA runtime|free memory on device|NIXL is not available|failed to start|cannot open shared object" \
-            "$@" 2>/dev/null | tail -n1 || true)
+            "${existing_files[@]}" 2>/dev/null | tail -n1 || true)
     fi
     echo "$error_line"
 }
@@ -99,6 +108,53 @@ resolve_repo_path() {
     fi
 }
 
+resolve_target_log_path() {
+    local launcher_log="$1"
+    local fallback_dir="${2:-}"
+
+    local target_output_rel target_log_rel target_log run_dir_abs
+    target_output_rel="$(awk -F':' '/target_output[[:space:]]*:/ {sub(/^[[:space:]]*/, "", $2); print $2; exit}' "$launcher_log" 2>/dev/null || true)"
+    target_log_rel="$(awk -F':' '/run_dir[[:space:]]*:/ {sub(/^[[:space:]]*/, "", $2); print $2; exit}' "$launcher_log" 2>/dev/null || true)"
+    target_log=""
+
+    if [[ -n "$target_output_rel" ]]; then
+        target_log="$(resolve_repo_path "$target_output_rel" || true)"
+        if [[ -f "$target_log" ]]; then
+            echo "$target_log"
+            return
+        fi
+    fi
+
+    if [[ -n "$target_log_rel" ]]; then
+        run_dir_abs="$(resolve_repo_path "$target_log_rel" || true)"
+        if [[ -n "$run_dir_abs" && -d "$run_dir_abs" ]]; then
+            if [[ -f "$run_dir_abs/target_script.log" ]]; then
+                echo "$run_dir_abs/target_script.log"
+                return
+            fi
+            target_log="$(find "$run_dir_abs" -maxdepth 3 -type f -name "target_script.log" | sort | tail -n1 || true)"
+            if [[ -n "$target_log" && -f "$target_log" ]]; then
+                echo "$target_log"
+                return
+            fi
+        fi
+    fi
+
+    if [[ -n "$fallback_dir" ]]; then
+        if [[ -f "$fallback_dir/target_script.log" ]]; then
+            echo "$fallback_dir/target_script.log"
+            return
+        fi
+        target_log="$(find "$fallback_dir" -maxdepth 3 -type f -name "target_script.log" | sort | tail -n1 || true)"
+        if [[ -n "$target_log" && -f "$target_log" ]]; then
+            echo "$target_log"
+            return
+        fi
+    fi
+
+    echo ""
+}
+
 summarize_lmms() {
     local root="$1"
     echo "## LMMS Compare"
@@ -110,43 +166,61 @@ summarize_lmms() {
         return
     fi
 
-    local cases=0
+    local runs=0
     local fails=0
-    local case_dir
-    for case_dir in "$root"/*; do
-        [[ -d "$case_dir" ]] || continue
-        [[ -f "$case_dir/launcher.log" ]] || continue
-        cases=$((cases + 1))
+    local launcher_log
+    while IFS= read -r launcher_log; do
+        [[ -n "$launcher_log" ]] || continue
+        runs=$((runs + 1))
 
-        local case_name
-        case_name="$(basename "$case_dir")"
-        local launcher_log="$case_dir/launcher.log"
-        local table_log="$case_dir/lmms_tables.log"
+        local run_root table_log eval_log rel
+        run_root="$(dirname "$launcher_log")"
+        table_log="$run_root/lmms_tables.log"
+        eval_log="$run_root/lmms_eval.log"
+        rel="${run_root#$root/}"
 
-        local run_dir_rel
-        run_dir_rel="$(awk -F':' '/run_dir[[:space:]]*:/ {sub(/^[[:space:]]*/, "", $2); print $2; exit}' "$launcher_log" || true)"
-        local run_dir=""
-        if [[ -n "$run_dir_rel" ]]; then
-            run_dir="$REPO_ROOT/$run_dir_rel"
+        local case_name method rate
+        case_name="$(awk -F'/' '{print $1}' <<< "$rel")"
+        method="-"
+        rate="-"
+        if [[ "$rel" == */* ]]; then
+            method="$(awk -F'/' '{print $2}' <<< "$rel")"
+        fi
+        if [[ "$rel" == */*/* ]]; then
+            local rate_tag
+            rate_tag="$(awk -F'/' '{print $3}' <<< "$rel")"
+            if [[ "$rate_tag" == r* ]]; then
+                rate="${rate_tag#r}"
+                rate="${rate//p/.}"
+            fi
         fi
 
-        local -a inspect_files=("$launcher_log")
+        local case_label="$case_name"
+        if [[ "$method" != "-" && -n "$method" ]]; then
+            case_label="$case_label/$method"
+        fi
+        if [[ "$rate" != "-" ]]; then
+            case_label="$case_label/r$rate"
+        fi
+
+        local run_dir_rel run_dir=""
+        run_dir_rel="$(awk -F':' '/run_dir[[:space:]]*:/ {sub(/^[[:space:]]*/, "", $2); print $2; exit}' "$launcher_log" 2>/dev/null || true)"
+        if [[ -n "$run_dir_rel" ]]; then
+            run_dir="$(resolve_repo_path "$run_dir_rel" || true)"
+        fi
+
+        local -a inspect_files=("$launcher_log" "$table_log" "$eval_log")
         if [[ -n "$run_dir" && -d "$run_dir" ]]; then
             while IFS= read -r f; do
                 inspect_files+=("$f")
-            done < <(find "$run_dir" -maxdepth 1 -type f -name "*.log" | sort)
+            done < <(find "$run_dir" -maxdepth 2 -type f -name "*.log" | sort)
         fi
 
-        local error_line
+        local error_line status
         error_line="$(extract_error_line_from_files "${inspect_files[@]}")"
-        local status="OK"
-        if [[ -n "$error_line" ]]; then
-            status="FAIL"
-            fails=$((fails + 1))
-        fi
+        status="OK"
 
-        local mmmu_acc="-"
-        local avg_speed="-"
+        local mmmu_acc="-" avg_speed="-"
         if [[ -f "$table_log" ]]; then
             mmmu_acc="$(awk -F'|' '/\|mmmu_val\|/ {gsub(/[[:space:]]/, "", $7); print $7; exit}' "$table_log" || true)"
             avg_speed="$(awk -F'|' '/\|avg_speed/ {gsub(/[[:space:]]/, "", $3); print $3; exit}' "$table_log" || true)"
@@ -154,20 +228,30 @@ summarize_lmms() {
             [[ -n "$avg_speed" ]] || avg_speed="-"
         fi
 
-        echo "- ${case_name}: ${status} (mmmu_acc=${mmmu_acc}, avg_speed=${avg_speed})"
-        if [[ -n "$error_line" ]]; then
+        if [[ "$mmmu_acc" == "-" ]]; then
+            status="FAIL"
+        elif [[ -n "$error_line" ]]; then
+            status="FAIL"
+        fi
+        if [[ "$status" == "FAIL" ]]; then
+            fails=$((fails + 1))
+        fi
+
+        echo "- ${case_label}: ${status} (mmmu_acc=${mmmu_acc}, avg_speed=${avg_speed})"
+        if [[ "$status" == "FAIL" ]]; then
+            [[ -n "$error_line" ]] || error_line="no LMMS table metrics detected"
             echo "  cause: $error_line"
             echo "  launcher: ${launcher_log#$REPO_ROOT/}"
             if [[ -n "$run_dir" ]]; then
                 echo "  run_dir: ${run_dir#$REPO_ROOT/}"
             fi
         fi
-    done
+    done < <(find "$root" -mindepth 1 -maxdepth 4 -type f -name "launcher.log" | sort)
 
-    if [[ $cases -eq 0 ]]; then
+    if [[ $runs -eq 0 ]]; then
         echo "status: no case launcher logs found"
     else
-        echo "cases: ${cases}, failures: ${fails}"
+        echo "cases: ${runs}, failures: ${fails}"
     fi
     echo
 }
@@ -190,30 +274,13 @@ summarize_sweep() {
         [[ -n "$run_dir" ]] || continue
         runs=$((runs + 1))
 
-        local case_name ipr launcher_log target_log target_log_rel target_output_rel
-        case_name="$(basename "$(dirname "$run_dir")")"
+        local case_name ipr launcher_log target_log rel
+        rel="${run_dir#$root/}"
+        case_name="$(awk -F'/' '{print $1}' <<< "$rel")"
         ipr="$(basename "$run_dir")"
         launcher_log="$run_dir/launcher.log"
 
-        # Prefer the true target log path emitted by run.sh; fall back to legacy
-        # location under the case run directory.
-        target_output_rel="$(awk -F':' '/target_output[[:space:]]*:/ {sub(/^[[:space:]]*/, "", $2); print $2; exit}' "$launcher_log" 2>/dev/null || true)"
-        target_log_rel="$(awk -F':' '/run_dir[[:space:]]*:/ {sub(/^[[:space:]]*/, "", $2); print $2; exit}' "$launcher_log" 2>/dev/null || true)"
-        target_log=""
-
-        if [[ -n "$target_output_rel" ]]; then
-            target_log="$(resolve_repo_path "$target_output_rel" || true)"
-        fi
-        if [[ -z "$target_log" || ! -f "$target_log" ]]; then
-            if [[ -n "$target_log_rel" ]]; then
-                target_log="$(resolve_repo_path "$target_log_rel" || true)/target_script.log"
-            else
-                target_log="$run_dir/target_script.log"
-            fi
-        fi
-        if [[ ! -f "$target_log" ]]; then
-            target_log="$run_dir/target_script.log"
-        fi
+        target_log="$(resolve_target_log_path "$launcher_log" "$run_dir")"
 
         local error_line
         error_line="$(extract_error_line_from_files "$launcher_log" "$target_log")"
@@ -250,7 +317,7 @@ summarize_sweep() {
                 echo "  target: ${target_log#$REPO_ROOT/}"
             fi
         fi
-    done < <(find "$root" -mindepth 2 -maxdepth 2 -type d -name "ipr*" | sort)
+    done < <(find "$root" -mindepth 2 -maxdepth 4 -type d -name "ipr*" | sort)
 
     if [[ $runs -eq 0 ]]; then
         echo "status: no sweep runs found"
@@ -280,40 +347,47 @@ summarize_vtp() {
         [[ -n "$run_dir" ]] || continue
         runs=$((runs + 1))
 
-        local rel method rate ipr
-        rel="${run_dir#$root/}"  # none/ipr1 OR visionzip/r0p5/ipr1
-        method="${rel%%/*}"
+        local rel case_name method rate ipr
+        rel="${run_dir#$root/}"  # case/method/ipr1 OR case/method/r0p5/ipr1
+        case_name="-"
+        method="none"
         rate="-"
         ipr="$(basename "$run_dir")"
-        if [[ "$rel" == */r*/ipr* ]]; then
-            local rate_tag
-            rate_tag="$(basename "$(dirname "$run_dir")")"
-            if [[ "$rate_tag" == r* ]]; then
-                rate="${rate_tag#r}"
+
+        local -a parts=()
+        IFS='/' read -r -a parts <<< "$rel"
+        local part_count="${#parts[@]}"
+        if (( part_count == 2 )); then
+            # method/ipr OR case/ipr (flattened none layout)
+            case "${parts[0]}" in
+                none|visionzip|cdpruner)
+                    method="${parts[0]}"
+                    ;;
+                *)
+                    case_name="${parts[0]}"
+                    method="none"
+                    ;;
+            esac
+        elif (( part_count >= 3 )); then
+            local maybe_rate maybe_method
+            maybe_rate="${parts[$((part_count - 2))]}"
+            if [[ "$maybe_rate" == r* ]]; then
+                rate="${maybe_rate#r}"
                 rate="${rate//p/.}"
-            fi
-        fi
-
-        local launcher_log target_log target_log_rel target_output_rel
-        launcher_log="$run_dir/launcher.log"
-
-        target_output_rel="$(awk -F':' '/target_output[[:space:]]*:/ {sub(/^[[:space:]]*/, "", $2); print $2; exit}' "$launcher_log" 2>/dev/null || true)"
-        target_log_rel="$(awk -F':' '/run_dir[[:space:]]*:/ {sub(/^[[:space:]]*/, "", $2); print $2; exit}' "$launcher_log" 2>/dev/null || true)"
-        target_log=""
-
-        if [[ -n "$target_output_rel" ]]; then
-            target_log="$(resolve_repo_path "$target_output_rel" || true)"
-        fi
-        if [[ -z "$target_log" || ! -f "$target_log" ]]; then
-            if [[ -n "$target_log_rel" ]]; then
-                target_log="$(resolve_repo_path "$target_log_rel" || true)/target_script.log"
+                maybe_method="${parts[$((part_count - 3))]}"
+                method="$maybe_method"
+                if (( part_count >= 4 )); then
+                    case_name="${parts[$((part_count - 4))]}"
+                fi
             else
-                target_log="$run_dir/target_script.log"
+                method="$maybe_rate"
+                case_name="${parts[$((part_count - 3))]}"
             fi
         fi
-        if [[ ! -f "$target_log" ]]; then
-            target_log="$run_dir/target_script.log"
-        fi
+
+        local launcher_log target_log
+        launcher_log="$run_dir/launcher.log"
+        target_log="$(resolve_target_log_path "$launcher_log" "$run_dir")"
 
         local error_line
         error_line="$(extract_error_line_from_files "$launcher_log" "$target_log")"
@@ -349,6 +423,9 @@ summarize_vtp() {
         fi
 
         error_line="${error_line//$'\t'/ }"
+        local error_line_print
+        error_line_print="$error_line"
+        [[ -n "$error_line_print" ]] || error_line_print="-"
         local launcher_rel target_rel
         launcher_rel="${launcher_log#$REPO_ROOT/}"
         target_rel="-"
@@ -356,9 +433,9 @@ summarize_vtp() {
             target_rel="${target_log#$REPO_ROOT/}"
         fi
 
-        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-            "$method" "$rate" "$ipr" "$status" "$mean_ttft" "$mean_tpot" "$req_tput" "$out_tput" "$total_tput" "$failed_req" "$error_line" "$launcher_rel" "$target_rel" >> "$compare_tmp"
-    done < <(find "$root" -mindepth 2 -maxdepth 3 -type d -name "ipr*" | sort)
+        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+            "$case_name" "$method" "$rate" "$ipr" "$status" "$mean_ttft" "$mean_tpot" "$req_tput" "$out_tput" "$total_tput" "$failed_req" "$error_line_print" "$launcher_rel" "$target_rel" >> "$compare_tmp"
+    done < <(find "$root" -mindepth 2 -maxdepth 5 -type d -name "ipr*" | sort)
 
     if [[ -s "$compare_tmp" ]]; then
         local sorted_tmp
@@ -381,14 +458,14 @@ summarize_vtp() {
                 return rate + 0
             }
             {
-                # sort by ipr -> method -> rate
-                printf "%06d\t%s\t%010.4f\t%s\n", ipr_rank($3), $1, rate_rank($2), $0
+                # sort by ipr -> case -> method -> rate
+                printf "%06d\t%s\t%s\t%010.4f\t%s\n", ipr_rank($4), $1, $2, rate_rank($3), $0
             }
-        ' "$compare_tmp" | sort -t$'\t' -k1,1n -k2,2 -k3,3n | cut -f4- > "$sorted_tmp"
+        ' "$compare_tmp" | sort -t$'\t' -k1,1n -k2,2 -k3,3 -k4,4n | cut -f5- > "$sorted_tmp"
 
-        while IFS=$'\t' read -r method rate ipr status mean_ttft mean_tpot req_tput out_tput total_tput failed_req error_line launcher_rel target_rel; do
-            echo "- method=${method} rate=${rate} ${ipr}: ${status} (failed_req=${failed_req}, req/s=${req_tput}, tok/s=${out_tput}, ttft=${mean_ttft}, tpot=${mean_tpot})"
-            if [[ -n "$error_line" ]]; then
+        while IFS=$'\t' read -r case_name method rate ipr status mean_ttft mean_tpot req_tput out_tput total_tput failed_req error_line launcher_rel target_rel; do
+            echo "- case=${case_name} method=${method} rate=${rate} ${ipr}: ${status} (failed_req=${failed_req}, req/s=${req_tput}, tok/s=${out_tput}, ttft=${mean_ttft}, tpot=${mean_tpot})"
+            if [[ -n "$error_line" && "$error_line" != "-" ]]; then
                 echo "  cause: $error_line"
                 echo "  launcher: $launcher_rel"
                 if [[ -n "$target_rel" && "$target_rel" != "-" ]]; then
@@ -400,10 +477,10 @@ summarize_vtp() {
         echo
         echo "### VTP TTFT/TPOT/Throughput Comparison"
         echo
-        echo "| method | rate | ipr | status | Mean TTFT (ms) | Mean TPOT (ms) | req/s | out tok/s | total tok/s |"
-        echo "|---|---:|---:|---|---:|---:|---:|---:|---:|"
-        while IFS=$'\t' read -r c_method c_rate c_ipr c_status c_ttft c_tpot c_req c_out c_total _c_failed _c_error _c_launcher _c_target; do
-            echo "| ${c_method} | ${c_rate} | ${c_ipr} | ${c_status} | ${c_ttft} | ${c_tpot} | ${c_req} | ${c_out} | ${c_total} |"
+        echo "| case | method | rate | ipr | status | Mean TTFT (ms) | Mean TPOT (ms) | req/s | out tok/s | total tok/s |"
+        echo "|---|---|---:|---:|---|---:|---:|---:|---:|---:|"
+        while IFS=$'\t' read -r c_case c_method c_rate c_ipr c_status c_ttft c_tpot c_req c_out c_total _c_failed _c_error _c_launcher _c_target; do
+            echo "| ${c_case} | ${c_method} | ${c_rate} | ${c_ipr} | ${c_status} | ${c_ttft} | ${c_tpot} | ${c_req} | ${c_out} | ${c_total} |"
         done < "$sorted_tmp"
         rm -f "$sorted_tmp"
     fi

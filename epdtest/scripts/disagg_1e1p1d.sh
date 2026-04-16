@@ -142,6 +142,7 @@ apply_visual_token_pruning_config() {
 
 build_visual_token_pruning_args() {
     declare -g -a VISUAL_TOKEN_PRUNING_ARGS=()
+    declare -g -a HF_OVERRIDES_ARGS=()
 
     case "${VISUAL_TOKEN_PRUNING_METHOD,,}" in
         ""|none|visionzip|cdpruner)
@@ -164,6 +165,10 @@ build_visual_token_pruning_args() {
         if [[ -n "${VISION_ZIP_ATTENTION_LAYER:-}" ]]; then
             VISUAL_TOKEN_PRUNING_ARGS+=(--vision-zip-attention-layer "$VISION_ZIP_ATTENTION_LAYER")
         fi
+    fi
+
+    if [[ "${VISUAL_TOKEN_PRUNING_METHOD,,}" == "visionzip" || "${VISUAL_TOKEN_PRUNING_METHOD,,}" == "cdpruner" ]]; then
+        HF_OVERRIDES_ARGS+=(--hf-overrides '{"architectures":["Qwen2_5_VLPruneForConditionalGeneration"]}')
     fi
 }
 
@@ -266,6 +271,7 @@ while port_in_use "$PREFILL_NIXL_SIDE_CHANNEL_PORT" || port_in_use "$DECODE_NIXL
 done
 
 CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
+    "${HF_OVERRIDES_ARGS[@]}" \
     --gpu-memory-utilization "$ENCODER_GPU_MEMORY_UTILIZATION" \
     --port "$ENCODE_PORT" \
     "${VLLM_EAGER_ARGS[@]}" \
@@ -287,6 +293,7 @@ PIDS+=($!)
 
 CUDA_VISIBLE_DEVICES="$GPU_P" UCX_NET_DEVICES=all VLLM_NIXL_SIDE_CHANNEL_PORT="$PREFILL_NIXL_SIDE_CHANNEL_PORT" \
 vllm serve "$MODEL" \
+    "${HF_OVERRIDES_ARGS[@]}" \
     --gpu-memory-utilization "$PREFILL_GPU_MEMORY_UTILIZATION" \
     --port "$PREFILL_PORT" \
     "${VLLM_EAGER_ARGS[@]}" \
@@ -312,6 +319,7 @@ PIDS+=($!)
 
 CUDA_VISIBLE_DEVICES="$GPU_D" UCX_NET_DEVICES=all VLLM_NIXL_SIDE_CHANNEL_PORT="$DECODE_NIXL_SIDE_CHANNEL_PORT" \
 vllm serve "$MODEL" \
+    "${HF_OVERRIDES_ARGS[@]}" \
     --gpu-memory-utilization "$DECODE_GPU_MEMORY_UTILIZATION" \
     --port "$DECODE_PORT" \
     "${VLLM_EAGER_ARGS[@]}" \

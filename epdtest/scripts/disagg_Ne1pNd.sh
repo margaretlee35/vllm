@@ -558,6 +558,7 @@ apply_visual_token_pruning_config() {
 
 build_visual_token_pruning_args() {
     declare -g -a VISUAL_TOKEN_PRUNING_ARGS=()
+    declare -g -a HF_OVERRIDES_ARGS=()
 
     case "${VISUAL_TOKEN_PRUNING_METHOD,,}" in
         ""|none|visionzip|cdpruner)
@@ -580,6 +581,10 @@ build_visual_token_pruning_args() {
         if [[ -n "${VISION_ZIP_ATTENTION_LAYER:-}" ]]; then
             VISUAL_TOKEN_PRUNING_ARGS+=(--vision-zip-attention-layer "$VISION_ZIP_ATTENTION_LAYER")
         fi
+    fi
+
+    if [[ "${VISUAL_TOKEN_PRUNING_METHOD,,}" == "visionzip" || "${VISUAL_TOKEN_PRUNING_METHOD,,}" == "cdpruner" ]]; then
+        HF_OVERRIDES_ARGS+=(--hf-overrides '{"architectures":["Qwen2_5_VLPruneForConditionalGeneration"]}')
     fi
 }
 
@@ -634,6 +639,7 @@ for idx in "${!ENCODE_GPUS[@]}"; do
     encode_log="${ENCODE_LOGS[$idx]}"
 
     CUDA_VISIBLE_DEVICES="$encode_gpu" vllm serve "$MODEL" \
+    "${HF_OVERRIDES_ARGS[@]}" \
         --gpu-memory-utilization "$ENCODER_GPU_MEMORY_UTILIZATION" \
         --port "$encode_port" \
         "${VLLM_EAGER_ARGS[@]}" \
@@ -662,6 +668,7 @@ fi
 
 env "${PREFILL_ENV[@]}" \
 vllm serve "$MODEL" \
+    "${HF_OVERRIDES_ARGS[@]}" \
     --gpu-memory-utilization "$PREFILL_GPU_MEMORY_UTILIZATION" \
     --port "$PREFILL_PORT" \
     "${VLLM_EAGER_ARGS[@]}" \
@@ -695,6 +702,7 @@ for idx in "${!DECODE_GPUS[@]}"; do
 
     env "${DECODE_ENV[@]}" \
     vllm serve "$MODEL" \
+    "${HF_OVERRIDES_ARGS[@]}" \
         --gpu-memory-utilization "$DECODE_GPU_MEMORY_UTILIZATION" \
         --port "$decode_port" \
         "${VLLM_EAGER_ARGS[@]}" \
