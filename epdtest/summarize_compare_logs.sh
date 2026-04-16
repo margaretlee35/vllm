@@ -273,6 +273,8 @@ summarize_vtp() {
 
     local runs=0
     local fails=0
+    local compare_tmp
+    compare_tmp="$(mktemp)"
     local run_dir
     while IFS= read -r run_dir; do
         [[ -n "$run_dir" ]] || continue
@@ -316,12 +318,18 @@ summarize_vtp() {
         local error_line
         error_line="$(extract_error_line_from_files "$launcher_log" "$target_log")"
 
-        local req_tput out_tput failed_req
+        local req_tput out_tput total_tput failed_req mean_ttft mean_tpot
         req_tput="$(awk -F':' '/Request throughput \(req\/s\):/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' "$target_log" 2>/dev/null || true)"
         out_tput="$(awk -F':' '/Output token throughput \(tok\/s\):/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' "$target_log" 2>/dev/null || true)"
+        total_tput="$(awk -F':' '/Total token throughput \(tok\/s\):/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' "$target_log" 2>/dev/null || true)"
+        mean_ttft="$(awk -F':' '/Mean TTFT \(ms\):/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' "$target_log" 2>/dev/null || true)"
+        mean_tpot="$(awk -F':' '/Mean TPOT \(ms\):/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' "$target_log" 2>/dev/null || true)"
         failed_req="$(awk -F':' '/Failed requests:/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' "$target_log" 2>/dev/null || true)"
         [[ -n "$req_tput" ]] || req_tput="-"
         [[ -n "$out_tput" ]] || out_tput="-"
+        [[ -n "$total_tput" ]] || total_tput="-"
+        [[ -n "$mean_ttft" ]] || mean_ttft="-"
+        [[ -n "$mean_tpot" ]] || mean_tpot="-"
         [[ -n "$failed_req" ]] || failed_req="-"
 
         local benchmark_done="0"
@@ -340,7 +348,7 @@ summarize_vtp() {
             fails=$((fails + 1))
         fi
 
-        echo "- method=${method} rate=${rate} ${ipr}: ${status} (failed_req=${failed_req}, req/s=${req_tput}, tok/s=${out_tput})"
+        echo "- method=${method} rate=${rate} ${ipr}: ${status} (failed_req=${failed_req}, req/s=${req_tput}, tok/s=${out_tput}, ttft=${mean_ttft}, tpot=${mean_tpot})"
         if [[ -n "$error_line" ]]; then
             echo "  cause: $error_line"
             echo "  launcher: ${launcher_log#$REPO_ROOT/}"
@@ -348,7 +356,22 @@ summarize_vtp() {
                 echo "  target: ${target_log#$REPO_ROOT/}"
             fi
         fi
+
+        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+            "$method" "$rate" "$ipr" "$status" "$mean_ttft" "$mean_tpot" "$req_tput" "$out_tput" "$total_tput" >> "$compare_tmp"
     done < <(find "$root" -mindepth 2 -maxdepth 3 -type d -name "ipr*" | sort)
+
+    if [[ -s "$compare_tmp" ]]; then
+        echo
+        echo "### VTP TTFT/TPOT/Throughput Comparison"
+        echo
+        echo "| method | rate | ipr | status | Mean TTFT (ms) | Mean TPOT (ms) | req/s | out tok/s | total tok/s |"
+        echo "|---|---:|---:|---|---:|---:|---:|---:|---:|"
+        while IFS=$'\t' read -r c_method c_rate c_ipr c_status c_ttft c_tpot c_req c_out c_total; do
+            echo "| ${c_method} | ${c_rate} | ${c_ipr} | ${c_status} | ${c_ttft} | ${c_tpot} | ${c_req} | ${c_out} | ${c_total} |"
+        done < "$compare_tmp"
+    fi
+    rm -f "$compare_tmp"
 
     if [[ $runs -eq 0 ]]; then
         echo "status: no vtp sweep runs found"
