@@ -62,7 +62,7 @@ if [[ ! -x "$REAL_VLLM_BIN" ]]; then
 fi
 
 CASES=(
-  "1e1p1d_e0_p1_d2|1e1p1d|0|1|0"
+  "1e1p1d_e0_p1_d2|1e1p1d|0|1|2"
   # "1e1pNd_e0_p1_d0-2|1e1pNd|0|1|0,2"
   # "1e1pNd_d_preempt_e0_p1_d0-2|1e1pNd_d_preempt|0|1|0,2"
   # "Ne1p1d_e0-1_p1_d2|Ne1p1d|0,1|1|2"
