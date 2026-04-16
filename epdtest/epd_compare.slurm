@@ -25,7 +25,7 @@ LMMS_RC=0
 SWEEP_RC=0
 
 bash ./epdtest/lmms_compare.sh || LMMS_RC=$?
-bash ./epdtest/sweep_compare.sh || SWEEP_RC=$?
+VTP_METHODS=none bash ./epdtest/vtp_compare.sh || SWEEP_RC=$?
 
 # Always summarize logs at the end.
 bash ./epdtest/summarize_compare_logs.sh --run-stamp "$RUN_STAMP" || true

@@ -1,10 +1,10 @@
 # Compare Run Guide
 
 This file explains the comparison entrypoints:
-- `epdtest/sweep_compare.sh`: serving benchmark comparison (throughput/latency)
+- `epdtest/vtp_compare.sh` (with `VTP_METHODS=none`): serving benchmark comparison (throughput/latency)
 - `epdtest/lmms_compare.sh`: LMMS accuracy + generation throughput comparison
-- `epdtest/vtp_compare.sh`: visual-token-pruning sweep on `1e1p1d`
-- Both support visual-token pruning method selection through `VISUAL_TOKEN_PRUNING_METHOD`
+- `epdtest/vtp_compare.sh`: visual-token-pruning sweep
+- Both support visual-token pruning method selection through `VTP_METHODS` (and `VTP_RATES` for non-`none` methods)
 
 ## Cases Compared
 
@@ -26,16 +26,16 @@ Supported methods:
 - `visionzip`
 - `cdpruner`
 
-Set method for either compare script by exporting:
+Set methods for either compare script by exporting:
 
 ```bash
-VISUAL_TOKEN_PRUNING_METHOD=none
+VTP_METHODS="none"
 ```
 
 or inline:
 
 ```bash
-VISUAL_TOKEN_PRUNING_METHOD=visionzip bash epdtest/sweep_compare.sh
+VTP_METHODS="visionzip" VTP_RATES="0.3 0.5 0.7 0.9" bash epdtest/vtp_compare.sh
 ```
 
 ## 1) Run Sweep Comparison
@@ -43,15 +43,15 @@ VISUAL_TOKEN_PRUNING_METHOD=visionzip bash epdtest/sweep_compare.sh
 From repo root:
 
 ```bash
-bash epdtest/sweep_compare.sh
+VTP_METHODS="none" bash epdtest/vtp_compare.sh
 ```
 
 Run one pruning method:
 
 ```bash
-VISUAL_TOKEN_PRUNING_METHOD=none bash epdtest/sweep_compare.sh
-VISUAL_TOKEN_PRUNING_METHOD=visionzip bash epdtest/sweep_compare.sh
-VISUAL_TOKEN_PRUNING_METHOD=cdpruner bash epdtest/sweep_compare.sh
+VTP_METHODS="none" bash epdtest/vtp_compare.sh
+VTP_METHODS="visionzip" VTP_RATES="0.3 0.5 0.7 0.9" bash epdtest/vtp_compare.sh
+VTP_METHODS="cdpruner" VTP_RATES="0.3 0.5 0.7 0.9" bash epdtest/vtp_compare.sh
 ```
 
 Run all three methods:
@@ -59,8 +59,9 @@ Run all three methods:
 ```bash
 for m in none visionzip cdpruner; do
   RUN_STAMP="$(date +%Y%m%d_%H%M%S)_${m}" \
-  VISUAL_TOKEN_PRUNING_METHOD="$m" \
-  bash epdtest/sweep_compare.sh
+  VTP_METHODS="$m" \
+  VTP_RATES="0.3 0.5 0.7 0.9" \
+  bash epdtest/vtp_compare.sh
 done
 ```
 
@@ -69,7 +70,8 @@ Common overrides:
 ```bash
 TIMEOUT_SECONDS=600 BENCH_REQUEST_RATE=8 BENCH_MAX_CONCURRENCY=32 \
 IMAGES_PER_REQ_LIST="1 2 4 8" \
-bash epdtest/sweep_compare.sh
+VTP_METHODS="none" \
+bash epdtest/vtp_compare.sh
 ```
 
 Main knobs:

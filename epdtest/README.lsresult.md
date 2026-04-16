@@ -5,7 +5,7 @@
 ### Commands
 
 ```bash
-bash epdtest/sweep_compare.sh
+VTP_METHODS=none bash epdtest/vtp_compare.sh
 bash epdtest/lmms_compare.sh
 ```
 

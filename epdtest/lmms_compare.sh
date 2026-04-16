@@ -22,6 +22,10 @@ LMMS_MODEL="${LMMS_MODEL:-openai_compatible}"
 LMMS_MODEL_ARGS_TEMPLATE="${LMMS_MODEL_ARGS_TEMPLATE:-model={MODEL},base_url=http://127.0.0.1:{PORT}/v1,api_key=EMPTY,temperature=0,max_new_tokens=128}"
 OPENAI_API_KEY="${OPENAI_API_KEY:-EMPTY}"
 
+# Default sweep methods requested by user.
+VTP_METHODS="${VTP_METHODS:-none visionzip}"
+VTP_RATES="${VTP_RATES:-0.3 0.5 0.7 0.9}"
+
 HF_HOME="${HF_HOME:-/workspace/.hf_cache}"
 HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-${HF_HOME}/datasets}"
 HUGGINGFACE_HUB_CACHE="${HUGGINGFACE_HUB_CACHE:-${HF_HOME}/hub}"
@@ -107,8 +111,11 @@ wait_proxy_ready() {
 }
 
 start_case() {
-  local case_name="$1" topology="$2" gpu_e="$3" gpu_p="$4" gpu_d="$5"
-  local case_root="$RUN_ROOT/$case_name"
+  local case_name="$1" topology="$2" gpu_e="$3" gpu_p="$4" gpu_d="$5" vtp_method="$6" vtp_rate="${7:-}"
+  local case_root="$RUN_ROOT/$case_name/$vtp_method"
+  if [[ -n "$vtp_rate" ]]; then
+    case_root="$case_root/r${vtp_rate//./p}"
+  fi
   local case_run_dir="$case_root/serve_run"
   local case_log="$case_root/launcher.log"
   local wrapper_dir="$case_root/bin"
@@ -130,29 +137,58 @@ WRAP
   echo
   echo "==== CASE: $case_name ===="
   echo "topology=$topology GPU_E=$gpu_e GPU_P=$gpu_p GPU_D=$gpu_d"
+  echo "vt_method=$vtp_method vt_rate=${vtp_rate:-n/a}"
   echo "run_dir=${case_run_dir#$REPO_ROOT/}"
 
-  setsid env \
-    PATH="$wrapper_dir:$PATH" \
-    VLLM_INTERCEPT_BENCH=1 \
-    REAL_VLLM_BIN="$REAL_VLLM_BIN" \
-    TIMEOUT_SECONDS="$TIMEOUT_SECONDS" \
-    BENCH_REQUEST_RATE="$BENCH_REQUEST_RATE" \
-    BENCH_MAX_CONCURRENCY="$BENCH_MAX_CONCURRENCY" \
-    BENCHMARK="$RUN_BENCHMARK" \
-    MODEL="$MODEL" \
-    IMAGES_PER_REQ="$IMAGES_PER_REQ" \
-    NUM_PROMPTS="$NUM_PROMPTS" \
-    GPU_E="$gpu_e" \
-    GPU_P="$gpu_p" \
-    GPU_D="$gpu_d" \
-    LOG_PATH="$RUN_ROOT" \
-    RUN_DIR="$case_run_dir" \
-    bash ./epdtest/run.sh \
-      --topology "$topology" \
-      --benchmark "$RUN_BENCHMARK" \
-      --images-per-req "$IMAGES_PER_REQ" \
-      > "$case_log" 2>&1 &
+  if [[ -n "$vtp_rate" ]]; then
+    setsid env \
+      PATH="$wrapper_dir:$PATH" \
+      VLLM_INTERCEPT_BENCH=1 \
+      REAL_VLLM_BIN="$REAL_VLLM_BIN" \
+      TIMEOUT_SECONDS="$TIMEOUT_SECONDS" \
+      BENCH_REQUEST_RATE="$BENCH_REQUEST_RATE" \
+      BENCH_MAX_CONCURRENCY="$BENCH_MAX_CONCURRENCY" \
+      BENCHMARK="$RUN_BENCHMARK" \
+      MODEL="$MODEL" \
+      IMAGES_PER_REQ="$IMAGES_PER_REQ" \
+      NUM_PROMPTS="$NUM_PROMPTS" \
+      GPU_E="$gpu_e" \
+      GPU_P="$gpu_p" \
+      GPU_D="$gpu_d" \
+      LOG_PATH="$case_run_dir" \
+      RUN_DIR="$case_run_dir" \
+      VISUAL_TOKEN_PRUNING_RATE="$vtp_rate" \
+      bash ./epdtest/run.sh \
+        --topology "$topology" \
+        --benchmark "$RUN_BENCHMARK" \
+        --images-per-req "$IMAGES_PER_REQ" \
+        --visual-token-pruning-method "$vtp_method" \
+        > "$case_log" 2>&1 &
+  else
+    setsid env \
+      PATH="$wrapper_dir:$PATH" \
+      VLLM_INTERCEPT_BENCH=1 \
+      REAL_VLLM_BIN="$REAL_VLLM_BIN" \
+      TIMEOUT_SECONDS="$TIMEOUT_SECONDS" \
+      BENCH_REQUEST_RATE="$BENCH_REQUEST_RATE" \
+      BENCH_MAX_CONCURRENCY="$BENCH_MAX_CONCURRENCY" \
+      BENCHMARK="$RUN_BENCHMARK" \
+      MODEL="$MODEL" \
+      IMAGES_PER_REQ="$IMAGES_PER_REQ" \
+      NUM_PROMPTS="$NUM_PROMPTS" \
+      GPU_E="$gpu_e" \
+      GPU_P="$gpu_p" \
+      GPU_D="$gpu_d" \
+      LOG_PATH="$case_run_dir" \
+      RUN_DIR="$case_run_dir" \
+      VISUAL_TOKEN_PRUNING_RATE="" \
+      bash ./epdtest/run.sh \
+        --topology "$topology" \
+        --benchmark "$RUN_BENCHMARK" \
+        --images-per-req "$IMAGES_PER_REQ" \
+        --visual-token-pruning-method "$vtp_method" \
+        > "$case_log" 2>&1 &
+  fi
 
   CURRENT_GROUP_PID="$!"
   wait_proxy_ready "$CURRENT_GROUP_PID" "$case_log"
@@ -173,6 +209,25 @@ tasks = [t for t in re.split(r"[,\s]+", sys.argv[1].strip()) if t]
 TaskManager("").load_task_or_group(tasks)
 PY
   echo "LMMS task preflight passed for tasks: $LMMS_TASKS"
+}
+
+validate_method() {
+  case "$1" in
+    none|visionzip|cdpruner) ;;
+    *)
+      echo "Unsupported visual-token pruning method: $1" >&2
+      echo "Supported methods: none, visionzip, cdpruner" >&2
+      exit 2
+      ;;
+  esac
+}
+
+validate_rate() {
+  if [[ ! "$1" =~ ^[0-9]*\.?[0-9]+$ ]]; then
+    echo "Invalid visual-token pruning rate: $1" >&2
+    echo "Use numeric values like: 0.3 0.5 0.7 0.9" >&2
+    exit 2
+  fi
 }
 
 extract_tables() {
@@ -200,8 +255,11 @@ extract_tables() {
 }
 
 run_lmms() {
-  local case_name="$1"
-  local outdir="$EVAL_ROOT/$case_name"
+  local case_name="$1" vtp_method="$2" vtp_rate="${3:-}"
+  local outdir="$EVAL_ROOT/$case_name/$vtp_method"
+  if [[ -n "$vtp_rate" ]]; then
+    outdir="$outdir/r${vtp_rate//./p}"
+  fi
   local lmms_log="$outdir/lmms_eval.log"
   local table_log="$outdir/lmms_tables.log"
   local model_args="${LMMS_MODEL_ARGS_TEMPLATE//\{MODEL\}/$MODEL}"
@@ -217,7 +275,7 @@ run_lmms() {
 
   local model_args_for_log
   model_args_for_log=$(echo "$model_args" | sed -E 's/(api_key=)[^,]*/\1***REDACTED***/g')
-  echo "LMMS model args ($case_name): $model_args_for_log"
+  echo "LMMS model args ($case_name/$vtp_method${vtp_rate:+/r$vtp_rate}): $model_args_for_log"
 
   "$LMMS_PYTHON_BIN" -m lmms_eval \
     --model "$LMMS_MODEL" \
@@ -231,7 +289,7 @@ run_lmms() {
   extract_tables "$lmms_log" "$table_log"
 
   {
-    echo "## $case_name"
+    echo "## $case_name | method=$vtp_method | rate=${vtp_rate:--}"
     echo
     cat "$table_log"
     echo
@@ -253,6 +311,8 @@ echo "  images_per_req         : $IMAGES_PER_REQ"
 echo "  lmms_tasks             : $LMMS_TASKS"
 echo "  lmms_limit             : $LMMS_LIMIT"
 echo "  lmms_batch_size        : $LMMS_BATCH_SIZE"
+echo "  vtp_methods            : $VTP_METHODS"
+echo "  vtp_rates              : $VTP_RATES"
 echo "  log_root               : ${RUN_ROOT#$REPO_ROOT/}"
 echo "  eval_root              : ${EVAL_ROOT#$REPO_ROOT/}"
 echo "  table_summary          : ${TABLE_SUMMARY_LOG#$REPO_ROOT/}"
@@ -265,9 +325,21 @@ preflight
 
 for spec in "${CASES[@]}"; do
   IFS='|' read -r case_name topology gpu_e gpu_p gpu_d <<< "$spec"
-  start_case "$case_name" "$topology" "$gpu_e" "$gpu_p" "$gpu_d"
-  run_lmms "$case_name"
-  stop_case
+  for vtp_method in $VTP_METHODS; do
+    validate_method "$vtp_method"
+    if [[ "$vtp_method" == "none" ]]; then
+      start_case "$case_name" "$topology" "$gpu_e" "$gpu_p" "$gpu_d" "$vtp_method"
+      run_lmms "$case_name" "$vtp_method"
+      stop_case
+    else
+      for vtp_rate in $VTP_RATES; do
+        validate_rate "$vtp_rate"
+        start_case "$case_name" "$topology" "$gpu_e" "$gpu_p" "$gpu_d" "$vtp_method" "$vtp_rate"
+        run_lmms "$case_name" "$vtp_method" "$vtp_rate"
+        stop_case
+      done
+    fi
+  done
 done
 
 echo
