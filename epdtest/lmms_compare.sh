@@ -27,7 +27,7 @@ OPENAI_API_KEY="${OPENAI_API_KEY:-EMPTY}"
 FORCE_LOCAL_OPENAI_BASE_URL="${FORCE_LOCAL_OPENAI_BASE_URL:-1}"
 
 # Default sweep methods requested by user.
-VTP_METHODS="${VTP_METHODS:-none visionzip}"
+VTP_METHODS="${VTP_METHODS:-visionzip}"
 VTP_RATES="${VTP_RATES:-0.3 0.5 0.7 0.9}"
 
 HF_HOME="${HF_HOME:-/workspace/.hf_cache}"
@@ -75,6 +75,7 @@ CASES=(
 
 CURRENT_GROUP_PID=""
 CURRENT_WRAPPER_DIR=""
+CURRENT_CASE_RUN_DIR=""
 
 cleanup() {
   set +e
@@ -88,6 +89,7 @@ cleanup() {
     rm -rf "$CURRENT_WRAPPER_DIR" 2>/dev/null || true
     CURRENT_WRAPPER_DIR=""
   fi
+  CURRENT_CASE_RUN_DIR=""
 }
 trap cleanup EXIT INT TERM
 
@@ -114,6 +116,73 @@ wait_proxy_ready() {
   return 1
 }
 
+resolve_prefill_run_dir() {
+  local base_run_dir="$1"
+  local latest_prefill=""
+  local latest_dir=""
+
+  if [[ -f "$base_run_dir/prefill.log" ]]; then
+    echo "$base_run_dir"
+    return 0
+  fi
+
+  latest_prefill="$(find "$base_run_dir" -mindepth 1 -maxdepth 3 -type f -name prefill.log 2>/dev/null | sort | tail -n 1 || true)"
+  if [[ -n "$latest_prefill" ]]; then
+    latest_dir="$(dirname "$latest_prefill")"
+    echo "$latest_dir"
+    return 0
+  fi
+
+  echo "$base_run_dir"
+}
+
+verify_prune_architecture_ready() {
+  local case_name="$1" vtp_method="$2" vtp_rate="${3:-}"
+  if [[ "$vtp_method" == "none" ]]; then
+    return 0
+  fi
+
+  local run_dir=""
+  local prefill_log=""
+  local case_tag="$case_name/$vtp_method${vtp_rate:+/r$vtp_rate}"
+  local deadline=$((SECONDS + SERVER_READY_TIMEOUT_SECONDS))
+
+  while (( SECONDS < deadline )); do
+    if [[ -n "$CURRENT_GROUP_PID" ]] && ! kill -0 "$CURRENT_GROUP_PID" 2>/dev/null; then
+      echo "Case launcher exited before prune architecture verification: $case_tag" >&2
+      return 1
+    fi
+
+    run_dir="$(resolve_prefill_run_dir "$CURRENT_CASE_RUN_DIR")"
+    prefill_log="$run_dir/prefill.log"
+    if [[ -f "$prefill_log" ]]; then
+      if rg -q "Resolved architecture: Qwen2_5_VLPruneForConditionalGeneration" "$prefill_log"; then
+        echo "Prune architecture verified ($case_tag): Qwen2_5_VLPruneForConditionalGeneration (${run_dir#$REPO_ROOT/})"
+        return 0
+      fi
+
+      if rg -q "Resolved architecture:" "$prefill_log"; then
+        echo "Expected prune architecture but got different resolved architecture ($case_tag)." >&2
+        rg -n "Resolved architecture:" "$prefill_log" >&2 || true
+        return 1
+      fi
+
+      if rg -q "vllm/multimodal/evs.py|qwen2_5_vl.py\", line 1391|IndexError: index 0 is out of bounds" "$prefill_log"; then
+        echo "Detected legacy EVS/base mRoPE traceback in prefill ($case_tag), refusing to continue." >&2
+        tail -n 120 "$prefill_log" >&2 || true
+        return 1
+      fi
+    fi
+    sleep 1
+  done
+
+  echo "Timed out waiting for prune architecture verification: $case_tag" >&2
+  if [[ -f "$prefill_log" ]]; then
+    tail -n 120 "$prefill_log" >&2 || true
+  fi
+  return 1
+}
+
 start_case() {
   local case_name="$1" topology="$2" gpu_e="$3" gpu_p="$4" gpu_d="$5" vtp_method="$6" vtp_rate="${7:-}"
   local case_root="$RUN_ROOT/$case_name/$vtp_method"
@@ -137,6 +206,7 @@ exec "${REAL_VLLM_BIN:?REAL_VLLM_BIN is not set}" "$@"
 WRAP
   chmod +x "$wrapper_dir/vllm"
   CURRENT_WRAPPER_DIR="$wrapper_dir"
+  CURRENT_CASE_RUN_DIR="$case_run_dir"
 
   echo
   echo "==== CASE: $case_name ===="
@@ -383,6 +453,7 @@ for spec in "${CASES[@]}"; do
       for vtp_rate in $VTP_RATES; do
         validate_rate "$vtp_rate"
         start_case "$case_name" "$topology" "$gpu_e" "$gpu_p" "$gpu_d" "$vtp_method" "$vtp_rate"
+        verify_prune_architecture_ready "$case_name" "$vtp_method" "$vtp_rate"
         run_lmms "$case_name" "$vtp_method" "$vtp_rate"
         stop_case
       done

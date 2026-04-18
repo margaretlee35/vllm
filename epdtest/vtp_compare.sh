@@ -157,6 +157,85 @@ launcher_log_for() {
   fi
 }
 
+run_dir_for() {
+  local case_name="$1"
+  local method="$2"
+  local images_per_req="$3"
+  local rate="${4:-}"
+  if [[ -n "$rate" ]]; then
+    local rate_tag="${rate//./p}"
+    echo "$SWEEP_ROOT/${case_name}/${method}/r${rate_tag}/ipr${images_per_req}"
+  elif [[ "$FLATTEN_NONE_LAYOUT" == "1" && "$method" == "none" ]]; then
+    echo "$SWEEP_ROOT/${case_name}/ipr${images_per_req}"
+  else
+    echo "$SWEEP_ROOT/${case_name}/${method}/ipr${images_per_req}"
+  fi
+}
+
+resolve_prefill_run_dir() {
+  local base_run_dir="$1"
+  local latest_prefill=""
+  local latest_dir=""
+
+  if [[ -f "$base_run_dir/prefill.log" ]]; then
+    echo "$base_run_dir"
+    return 0
+  fi
+
+  latest_prefill="$(find "$base_run_dir" -mindepth 1 -maxdepth 3 -type f -name prefill.log 2>/dev/null | sort | tail -n 1 || true)"
+  if [[ -n "$latest_prefill" ]]; then
+    latest_dir="$(dirname "$latest_prefill")"
+    echo "$latest_dir"
+    return 0
+  fi
+
+  echo "$base_run_dir"
+}
+
+verify_model_routing() {
+  local case_name="$1"
+  local method="$2"
+  local images_per_req="$3"
+  local rate="${4:-}"
+  local run_dir
+  run_dir="$(run_dir_for "$case_name" "$method" "$images_per_req" "$rate")"
+  run_dir="$(resolve_prefill_run_dir "$run_dir")"
+  local prefill_log="$run_dir/prefill.log"
+  local case_tag="case=$case_name method=$method rate=${rate:-n/a} ipr=$images_per_req"
+
+  if [[ ! -f "$prefill_log" ]]; then
+    echo "missing prefill.log ($case_tag): ${prefill_log#$REPO_ROOT/}" >&2
+    return 1
+  fi
+
+  if [[ "$method" == "none" ]]; then
+    if rg -q "Resolved architecture: Qwen2_5_VLPruneForConditionalGeneration" "$prefill_log"; then
+      echo "none-method run incorrectly resolved prune architecture ($case_tag)" >&2
+      rg -n "Resolved architecture:" "$prefill_log" >&2 || true
+      return 1
+    fi
+    return 0
+  fi
+
+  if rg -q "Resolved architecture: Qwen2_5_VLPruneForConditionalGeneration" "$prefill_log"; then
+    return 0
+  fi
+
+  if rg -q "Resolved architecture:" "$prefill_log"; then
+    echo "expected prune architecture but resolved different architecture ($case_tag)" >&2
+    rg -n "Resolved architecture:" "$prefill_log" >&2 || true
+    return 1
+  fi
+
+  if rg -q "vllm/multimodal/evs.py|qwen2_5_vl.py\", line 1391|IndexError: index 0 is out of bounds" "$prefill_log"; then
+    echo "detected EVS/base fallback traceback in prefill ($case_tag)" >&2
+    return 1
+  fi
+
+  echo "could not confirm expected model routing from prefill log ($case_tag)" >&2
+  return 1
+}
+
 run_with_handling() {
   local case_name="$1"
   local topology="$2"
@@ -171,6 +250,12 @@ run_with_handling() {
 
   TOTAL_RUNS=$((TOTAL_RUNS + 1))
   if run_one "$case_name" "$topology" "$gpu_e" "$gpu_p" "$gpu_d" "$method" "$images_per_req" "$rate"; then
+    if ! verify_model_routing "$case_name" "$method" "$images_per_req" "$rate"; then
+      FAIL_RUNS=$((FAIL_RUNS + 1))
+      launcher_log="$(launcher_log_for "$case_name" "$method" "$images_per_req" "$rate")"
+      echo "[fail] case=$case_name method=$method rate=${rate:-n/a} ipr=$images_per_req cause: model routing verification failed"
+      echo "       launcher: ${launcher_log#$REPO_ROOT/}"
+    fi
     return 0
   fi
 

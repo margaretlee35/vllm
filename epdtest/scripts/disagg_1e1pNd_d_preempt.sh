@@ -598,6 +598,7 @@ fi
 declare -a ENCODE_CMD=(
     env "${ENCODE_ENV[@]}"
     vllm serve "$MODEL"
+    "${HF_OVERRIDES_ARGS[@]}"
     --gpu-memory-utilization "$ENCODER_GPU_MEMORY_UTILIZATION"
     --port "$ENCODE_PORT"
     "${VLLM_EAGER_ARGS[@]}"
@@ -638,6 +639,7 @@ fi
 declare -a PREFILL_CMD=(
     env "${PREFILL_ENV[@]}"
     vllm serve "$MODEL"
+    "${HF_OVERRIDES_ARGS[@]}"
     --gpu-memory-utilization "$PREFILL_GPU_MEMORY_UTILIZATION"
     --port "$PREFILL_PORT"
     "${VLLM_EAGER_ARGS[@]}"

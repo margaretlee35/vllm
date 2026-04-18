@@ -582,6 +582,7 @@ for idx in "${!ENCODE_GPUS[@]}"; do
     declare -a ENCODE_CMD=(
         env "${ENCODE_ENV[@]}"
         vllm serve "$MODEL"
+        "${HF_OVERRIDES_ARGS[@]}"
         --gpu-memory-utilization "$ENCODER_GPU_MEMORY_UTILIZATION"
         --port "$encode_port"
         "${VLLM_EAGER_ARGS[@]}"
