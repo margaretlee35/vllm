@@ -5,79 +5,92 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)
 cd "$REPO_ROOT"
 
+# Core run config
 MODEL="${MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}"
 RUN_BENCHMARK="${RUN_BENCHMARK:-randommm}"
 PROXY_PORT="${PROXY_PORT:-10001}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-600}"
+SERVER_READY_TIMEOUT_SECONDS="${SERVER_READY_TIMEOUT_SECONDS:-900}"
 BENCH_REQUEST_RATE="${BENCH_REQUEST_RATE:-4}"
 BENCH_MAX_CONCURRENCY="${BENCH_MAX_CONCURRENCY:-32}"
 IMAGES_PER_REQ="${IMAGES_PER_REQ:-1}"
 NUM_PROMPTS="${NUM_PROMPTS:-300}"
-SERVER_READY_TIMEOUT_SECONDS="${SERVER_READY_TIMEOUT_SECONDS:-900}"
 
+# LMMS config
 LMMS_TASKS="${LMMS_TASKS:-mmmu_val}"
-# Default to full-task evaluation (no --limit cap).
-# Set LMMS_LIMIT to a positive integer to run a subset.
 LMMS_LIMIT="${LMMS_LIMIT:-}"
 LMMS_BATCH_SIZE="${LMMS_BATCH_SIZE:-1}"
-LMMS_MODEL="${LMMS_MODEL:-openai_compatible}"
-LMMS_MODEL_ARGS_TEMPLATE="${LMMS_MODEL_ARGS_TEMPLATE:-model={MODEL},base_url=http://127.0.0.1:{PORT}/v1,api_key=EMPTY,temperature=0,max_new_tokens=128}"
 OPENAI_API_KEY="${OPENAI_API_KEY:-EMPTY}"
-# If 1, force OpenAI-compatible backends to use local vLLM endpoint.
-FORCE_LOCAL_OPENAI_BASE_URL="${FORCE_LOCAL_OPENAI_BASE_URL:-1}"
 
-# Default sweep methods requested by user.
+# Pruning sweep
 VTP_METHODS="${VTP_METHODS:-visionzip}"
 VTP_RATES="${VTP_RATES:-0.3 0.5 0.7 0.9}"
 
+# Cache/output
 HF_HOME="${HF_HOME:-/workspace/.hf_cache}"
 HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-${HF_HOME}/datasets}"
 HUGGINGFACE_HUB_CACHE="${HUGGINGFACE_HUB_CACHE:-${HF_HOME}/hub}"
-
 LOG_PATH="${LOG_PATH:-$REPO_ROOT/epdtest/logs/lmms}"
 EVAL_OUTPUT_ROOT="${EVAL_OUTPUT_ROOT:-$LOG_PATH}"
 RUN_STAMP="${RUN_STAMP:-$(date +"%Y%m%d_%H%M%S")}" 
-RUN_ROOT="$LOG_PATH/${RUN_STAMP}"
-EVAL_ROOT="$EVAL_OUTPUT_ROOT/${RUN_STAMP}"
+RUN_ROOT="$LOG_PATH/$RUN_STAMP"
+EVAL_ROOT="$EVAL_OUTPUT_ROOT/$RUN_STAMP"
 TABLE_SUMMARY_LOG="$EVAL_ROOT/lmms_tables_summary.md"
 
-mkdir -p "$HF_HOME" "$HF_DATASETS_CACHE" "$HUGGINGFACE_HUB_CACHE" "$RUN_ROOT" "$EVAL_ROOT"
-
-LMMS_PYTHON_BIN="${LMMS_PYTHON_BIN:-}"
-if [[ -z "$LMMS_PYTHON_BIN" ]]; then
-  if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
-    LMMS_PYTHON_BIN="${VIRTUAL_ENV}/bin/python"
-  elif [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
-    LMMS_PYTHON_BIN="$REPO_ROOT/.venv/bin/python"
-  elif command -v python3 >/dev/null 2>&1; then
-    LMMS_PYTHON_BIN="python3"
-  else
-    LMMS_PYTHON_BIN="python"
-  fi
-fi
-
-REAL_VLLM_BIN="${REAL_VLLM_BIN:-$REPO_ROOT/.venv/bin/vllm}"
-if [[ ! -x "$REAL_VLLM_BIN" ]]; then
-  REAL_VLLM_BIN="$(command -v vllm)"
-fi
-
+# Cases: case_name|topology|gpu_e|gpu_p|gpu_d
 CASES=(
   "1e1p1d_e0_p1_d2|1e1p1d|0|1|2"
-  # "1e1pNd_e0_p1_d0-2|1e1pNd|0|1|0,2"
-  # "1e1pNd_d_preempt_e0_p1_d0-2|1e1pNd_d_preempt|0|1|0,2"
-  # "Ne1p1d_e0-1_p1_d2|Ne1p1d|0,1|1|2"
-  # "Ne1p1d_e0-2_p1_d2|Ne1p1d|0,2|1|2"
-  # "Ne1p1d_e0-1-2_p1_d2|Ne1p1d|0,1,2|1|2"
-  # "Ne1p1d_pd_preempt_e0-1-2_p1_d2|Ne1p1d_pd_preempt|0,1,2|1|2"
-  # "Ne1pNd_e0-1_p1_d0-2|Ne1pNd|0,1|1|0,2"
-  # "Ne1pNd_pd_preempt_e0-1_p1_d0-2|Ne1pNd_pd_preempt|0,1|1|0,2"
 )
+
+infer_prune_arch_expect_re() {
+  local model_lc="${MODEL,,}"
+  case "$model_lc" in
+    *qwen2.5-vl*)
+      echo "Qwen2_5_VLPruneForConditionalGeneration|Qwen2_5_VLVisionZipForConditionalGeneration"
+      ;;
+    *)
+      echo "PruneForConditionalGeneration|VisionZipForConditionalGeneration"
+      ;;
+  esac
+}
+PRUNE_ARCH_EXPECT_RE="${PRUNE_ARCH_EXPECT_RE:-$(infer_prune_arch_expect_re)}"
+
+pick_python_bin() {
+  if [[ -n "${LMMS_PYTHON_BIN:-}" ]]; then
+    echo "$LMMS_PYTHON_BIN"
+    return
+  fi
+  if [[ -n "${VIRTUAL_ENV:-}" && -x "${VIRTUAL_ENV}/bin/python" ]]; then
+    echo "${VIRTUAL_ENV}/bin/python"
+  elif [[ -x "$REPO_ROOT/.venv/bin/python" ]]; then
+    echo "$REPO_ROOT/.venv/bin/python"
+  elif command -v python3 >/dev/null 2>&1; then
+    echo "python3"
+  else
+    echo "python"
+  fi
+}
+
+pick_vllm_bin() {
+  if [[ -n "${REAL_VLLM_BIN:-}" && -x "$REAL_VLLM_BIN" ]]; then
+    echo "$REAL_VLLM_BIN"
+  elif [[ -x "$REPO_ROOT/.venv/bin/vllm" ]]; then
+    echo "$REPO_ROOT/.venv/bin/vllm"
+  else
+    command -v vllm
+  fi
+}
+
+LMMS_PYTHON_BIN="$(pick_python_bin)"
+REAL_VLLM_BIN="$(pick_vllm_bin)"
+
+mkdir -p "$HF_HOME" "$HF_DATASETS_CACHE" "$HUGGINGFACE_HUB_CACHE" "$RUN_ROOT" "$EVAL_ROOT"
 
 CURRENT_GROUP_PID=""
 CURRENT_WRAPPER_DIR=""
 CURRENT_CASE_RUN_DIR=""
 
-cleanup() {
+cleanup_current_case() {
   set +e
   if [[ -n "$CURRENT_GROUP_PID" ]]; then
     kill -- -"$CURRENT_GROUP_PID" 2>/dev/null || true
@@ -91,11 +104,14 @@ cleanup() {
   fi
   CURRENT_CASE_RUN_DIR=""
 }
-trap cleanup EXIT INT TERM
+
+cleanup_all() {
+  cleanup_current_case
+}
+trap cleanup_all EXIT INT TERM
 
 wait_proxy_ready() {
-  local pid="$1"
-  local log="$2"
+  local pid="$1" log="$2"
   local url="http://127.0.0.1:${PROXY_PORT}/v1/models"
   local deadline=$((SECONDS + SERVER_READY_TIMEOUT_SECONDS))
 
@@ -118,32 +134,24 @@ wait_proxy_ready() {
 
 resolve_prefill_run_dir() {
   local base_run_dir="$1"
-  local latest_prefill=""
-  local latest_dir=""
-
   if [[ -f "$base_run_dir/prefill.log" ]]; then
     echo "$base_run_dir"
     return 0
   fi
 
-  latest_prefill="$(find "$base_run_dir" -mindepth 1 -maxdepth 3 -type f -name prefill.log 2>/dev/null | sort | tail -n 1 || true)"
+  local latest_prefill
+  latest_prefill="$(find "$base_run_dir" -mindepth 1 -maxdepth 4 -type f -name prefill.log 2>/dev/null | sort | tail -n 1 || true)"
   if [[ -n "$latest_prefill" ]]; then
-    latest_dir="$(dirname "$latest_prefill")"
-    echo "$latest_dir"
-    return 0
+    dirname "$latest_prefill"
+  else
+    echo "$base_run_dir"
   fi
-
-  echo "$base_run_dir"
 }
 
 verify_prune_architecture_ready() {
   local case_name="$1" vtp_method="$2" vtp_rate="${3:-}"
-  if [[ "$vtp_method" == "none" ]]; then
-    return 0
-  fi
+  [[ "$vtp_method" == "none" ]] && return 0
 
-  local run_dir=""
-  local prefill_log=""
   local case_tag="$case_name/$vtp_method${vtp_rate:+/r$vtp_rate}"
   local deadline=$((SECONDS + SERVER_READY_TIMEOUT_SECONDS))
 
@@ -153,49 +161,40 @@ verify_prune_architecture_ready() {
       return 1
     fi
 
+    local run_dir
     run_dir="$(resolve_prefill_run_dir "$CURRENT_CASE_RUN_DIR")"
-    prefill_log="$run_dir/prefill.log"
+    local prefill_log="$run_dir/prefill.log"
+
     if [[ -f "$prefill_log" ]]; then
-      if rg -q "Resolved architecture: Qwen2_5_VLPruneForConditionalGeneration" "$prefill_log"; then
-        echo "Prune architecture verified ($case_tag): Qwen2_5_VLPruneForConditionalGeneration (${run_dir#$REPO_ROOT/})"
+      if rg -Eq "Resolved architecture(s)?: .*(${PRUNE_ARCH_EXPECT_RE})" "$prefill_log" || \
+         rg -Eq "(${PRUNE_ARCH_EXPECT_RE})" "$prefill_log"; then
+        echo "Prune architecture verified ($case_tag): matched /${PRUNE_ARCH_EXPECT_RE}/"
         return 0
       fi
 
-      if rg -q "Resolved architecture:" "$prefill_log"; then
+      if rg -Eq "Resolved architecture(s)?:" "$prefill_log"; then
         echo "Expected prune architecture but got different resolved architecture ($case_tag)." >&2
-        rg -n "Resolved architecture:" "$prefill_log" >&2 || true
+        rg -n "Resolved architecture(s)?:" "$prefill_log" >&2 || true
         return 1
       fi
 
       if rg -q "vllm/multimodal/evs.py|qwen2_5_vl.py\", line 1391|IndexError: index 0 is out of bounds" "$prefill_log"; then
-        echo "Detected legacy EVS/base mRoPE traceback in prefill ($case_tag), refusing to continue." >&2
+        echo "Detected legacy EVS/base mRoPE traceback in prefill ($case_tag)." >&2
         tail -n 120 "$prefill_log" >&2 || true
         return 1
       fi
     fi
+
     sleep 1
   done
 
   echo "Timed out waiting for prune architecture verification: $case_tag" >&2
-  if [[ -f "$prefill_log" ]]; then
-    tail -n 120 "$prefill_log" >&2 || true
-  fi
   return 1
 }
 
-start_case() {
-  local case_name="$1" topology="$2" gpu_e="$3" gpu_p="$4" gpu_d="$5" vtp_method="$6" vtp_rate="${7:-}"
-  local case_root="$RUN_ROOT/$case_name/$vtp_method"
-  if [[ -n "$vtp_rate" ]]; then
-    case_root="$case_root/r${vtp_rate//./p}"
-  fi
-  local case_run_dir="$case_root/serve_run"
-  local case_log="$case_root/launcher.log"
-  local wrapper_dir="$case_root/bin"
-
-  mkdir -p "$case_root" "$case_run_dir" "$wrapper_dir"
-
-  cat > "$wrapper_dir/vllm" <<'WRAP'
+create_vllm_wrapper() {
+  local wrapper_path="$1"
+  cat > "$wrapper_path" <<'WRAP'
 #!/bin/bash
 set -euo pipefail
 if [[ "${VLLM_INTERCEPT_BENCH:-0}" == "1" && "${1:-}" == "bench" && "${2:-}" == "serve" ]]; then
@@ -204,7 +203,21 @@ if [[ "${VLLM_INTERCEPT_BENCH:-0}" == "1" && "${1:-}" == "bench" && "${2:-}" == 
 fi
 exec "${REAL_VLLM_BIN:?REAL_VLLM_BIN is not set}" "$@"
 WRAP
-  chmod +x "$wrapper_dir/vllm"
+  chmod +x "$wrapper_path"
+}
+
+start_case() {
+  local case_name="$1" topology="$2" gpu_e="$3" gpu_p="$4" gpu_d="$5" vtp_method="$6" vtp_rate="${7:-}"
+
+  local case_root="$RUN_ROOT/$case_name/$vtp_method"
+  [[ -n "$vtp_rate" ]] && case_root="$case_root/r${vtp_rate//./p}"
+
+  local case_run_dir="$case_root/serve_run"
+  local case_log="$case_root/launcher.log"
+  local wrapper_dir="$case_root/bin"
+  mkdir -p "$case_root" "$case_run_dir" "$wrapper_dir"
+
+  create_vllm_wrapper "$wrapper_dir/vllm"
   CURRENT_WRAPPER_DIR="$wrapper_dir"
   CURRENT_CASE_RUN_DIR="$case_run_dir"
 
@@ -214,57 +227,39 @@ WRAP
   echo "vt_method=$vtp_method vt_rate=${vtp_rate:-n/a}"
   echo "run_dir=${case_run_dir#$REPO_ROOT/}"
 
+  local -a run_env=(
+    env
+    PATH="$wrapper_dir:$PATH"
+    VLLM_INTERCEPT_BENCH=1
+    REAL_VLLM_BIN="$REAL_VLLM_BIN"
+    TIMEOUT_SECONDS="$TIMEOUT_SECONDS"
+    BENCH_REQUEST_RATE="$BENCH_REQUEST_RATE"
+    BENCH_MAX_CONCURRENCY="$BENCH_MAX_CONCURRENCY"
+    BENCHMARK="$RUN_BENCHMARK"
+    MODEL="$MODEL"
+    IMAGES_PER_REQ="$IMAGES_PER_REQ"
+    NUM_PROMPTS="$NUM_PROMPTS"
+    ENFORCE_EAGER=1
+    GPU_E="$gpu_e"
+    GPU_P="$gpu_p"
+    GPU_D="$gpu_d"
+    LOG_PATH="$case_run_dir"
+    RUN_DIR="$case_run_dir"
+  )
+
   if [[ -n "$vtp_rate" ]]; then
-    setsid env \
-      PATH="$wrapper_dir:$PATH" \
-      VLLM_INTERCEPT_BENCH=1 \
-      REAL_VLLM_BIN="$REAL_VLLM_BIN" \
-      TIMEOUT_SECONDS="$TIMEOUT_SECONDS" \
-      BENCH_REQUEST_RATE="$BENCH_REQUEST_RATE" \
-      BENCH_MAX_CONCURRENCY="$BENCH_MAX_CONCURRENCY" \
-      BENCHMARK="$RUN_BENCHMARK" \
-      MODEL="$MODEL" \
-      IMAGES_PER_REQ="$IMAGES_PER_REQ" \
-      NUM_PROMPTS="$NUM_PROMPTS" \
-      ENFORCE_EAGER="1" \
-      GPU_E="$gpu_e" \
-      GPU_P="$gpu_p" \
-      GPU_D="$gpu_d" \
-      LOG_PATH="$case_run_dir" \
-      RUN_DIR="$case_run_dir" \
-      VISUAL_TOKEN_PRUNING_RATE="$vtp_rate" \
-      bash ./epdtest/run.sh \
-        --topology "$topology" \
-        --benchmark "$RUN_BENCHMARK" \
-        --images-per-req "$IMAGES_PER_REQ" \
-        --visual-token-pruning-method "$vtp_method" \
-        > "$case_log" 2>&1 &
+    run_env+=(VISUAL_TOKEN_PRUNING_RATE="$vtp_rate")
   else
-    setsid env \
-      PATH="$wrapper_dir:$PATH" \
-      VLLM_INTERCEPT_BENCH=1 \
-      REAL_VLLM_BIN="$REAL_VLLM_BIN" \
-      TIMEOUT_SECONDS="$TIMEOUT_SECONDS" \
-      BENCH_REQUEST_RATE="$BENCH_REQUEST_RATE" \
-      BENCH_MAX_CONCURRENCY="$BENCH_MAX_CONCURRENCY" \
-      BENCHMARK="$RUN_BENCHMARK" \
-      MODEL="$MODEL" \
-      IMAGES_PER_REQ="$IMAGES_PER_REQ" \
-      NUM_PROMPTS="$NUM_PROMPTS" \
-      ENFORCE_EAGER="1" \
-      GPU_E="$gpu_e" \
-      GPU_P="$gpu_p" \
-      GPU_D="$gpu_d" \
-      LOG_PATH="$case_run_dir" \
-      RUN_DIR="$case_run_dir" \
-      VISUAL_TOKEN_PRUNING_RATE="" \
-      bash ./epdtest/run.sh \
-        --topology "$topology" \
-        --benchmark "$RUN_BENCHMARK" \
-        --images-per-req "$IMAGES_PER_REQ" \
-        --visual-token-pruning-method "$vtp_method" \
-        > "$case_log" 2>&1 &
+    run_env+=(VISUAL_TOKEN_PRUNING_RATE="")
   fi
+
+  setsid "${run_env[@]}" \
+    bash ./epdtest/run.sh \
+      --topology "$topology" \
+      --benchmark "$RUN_BENCHMARK" \
+      --images-per-req "$IMAGES_PER_REQ" \
+      --visual-token-pruning-method "$vtp_method" \
+      > "$case_log" 2>&1 &
 
   CURRENT_GROUP_PID="$!"
   wait_proxy_ready "$CURRENT_GROUP_PID" "$case_log"
@@ -272,10 +267,10 @@ WRAP
 }
 
 stop_case() {
-  cleanup
+  cleanup_current_case
 }
 
-preflight() {
+preflight_lmms_tasks() {
   "$LMMS_PYTHON_BIN" - "$LMMS_TASKS" <<'PY' >/dev/null
 import re
 import sys
@@ -292,23 +287,17 @@ validate_method() {
     none|visionzip|cdpruner) ;;
     *)
       echo "Unsupported visual-token pruning method: $1" >&2
-      echo "Supported methods: none, visionzip, cdpruner" >&2
       exit 2
       ;;
   esac
 }
 
 validate_rate() {
-  if [[ ! "$1" =~ ^[0-9]*\.?[0-9]+$ ]]; then
-    echo "Invalid visual-token pruning rate: $1" >&2
-    echo "Use numeric values like: 0.3 0.5 0.7 0.9" >&2
-    exit 2
-  fi
+  [[ "$1" =~ ^[0-9]*\.?[0-9]+$ ]] || { echo "Invalid visual-token pruning rate: $1" >&2; exit 2; }
 }
 
 extract_tables() {
-  local in_log="$1"
-  local out_log="$2"
+  local in_log="$1" out_log="$2"
   awk '
     BEGIN { in_tasks=0; in_t=0; got_tasks=0; got_t=0; }
     /^\| Tasks[[:space:]]*\|/ { in_tasks=1; got_tasks=1; print; next }
@@ -333,66 +322,27 @@ extract_tables() {
 run_lmms() {
   local case_name="$1" vtp_method="$2" vtp_rate="${3:-}"
   local outdir="$EVAL_ROOT/$case_name/$vtp_method"
-  if [[ -n "$vtp_rate" ]]; then
-    outdir="$outdir/r${vtp_rate//./p}"
-  fi
+  [[ -n "$vtp_rate" ]] && outdir="$outdir/r${vtp_rate//./p}"
+
   local lmms_log="$outdir/lmms_eval.log"
   local table_log="$outdir/lmms_tables.log"
-  local model_args="${LMMS_MODEL_ARGS_TEMPLATE//\{MODEL\}/$MODEL}"
-  model_args="${model_args//\{PORT\}/$PROXY_PORT}"
-  local local_base_url="http://127.0.0.1:${PROXY_PORT}/v1"
+  local base_url="http://127.0.0.1:${PROXY_PORT}/v1"
+  local model_args="model=${MODEL},base_url=${base_url},api_key=${OPENAI_API_KEY},temperature=0,max_new_tokens=128"
 
   mkdir -p "$outdir"
   export HF_HOME HF_DATASETS_CACHE HUGGINGFACE_HUB_CACHE OPENAI_API_KEY
-
-  case "$LMMS_MODEL" in
-    openai|openai_compatible)
-      export OPENAI_API_BASE="$local_base_url"
-      export OPENAI_BASE_URL="$local_base_url"
-      local canonical_model_args="model=${MODEL},base_url=${local_base_url},api_key=${OPENAI_API_KEY},temperature=0,max_new_tokens=128"
-
-      # If placeholders remain or template looks malformed, reset to canonical args.
-      if [[ "$model_args" == *"{MODEL"* || "$model_args" == *"{PORT"* || "$model_args" == \{* ]]; then
-        model_args="$canonical_model_args"
-      fi
-
-      if [[ "$FORCE_LOCAL_OPENAI_BASE_URL" == "1" ]]; then
-        if [[ "$model_args" == *"base_url="* ]]; then
-          model_args=$(echo "$model_args" | sed -E "s|base_url=[^,]*|base_url=${local_base_url}|g")
-        else
-          model_args="${model_args},base_url=${local_base_url}"
-        fi
-      fi
-
-      if [[ "$model_args" == *"model="* ]]; then
-        model_args=$(echo "$model_args" | sed -E "s|model=[^,}]*|model=${MODEL}|g")
-      else
-        model_args="model=${MODEL},${model_args}"
-      fi
-
-      if [[ "$model_args" != *"api_key="* ]]; then
-        model_args="${model_args},api_key=${OPENAI_API_KEY}"
-      fi
-      ;;
-  esac
+  export OPENAI_API_BASE="$base_url"
+  export OPENAI_BASE_URL="$base_url"
 
   local -a limit_arg=()
-  if [[ -n "$LMMS_LIMIT" ]]; then
-    case "${LMMS_LIMIT,,}" in
-      0|all|none) ;;
-      *) limit_arg=(--limit "$LMMS_LIMIT") ;;
-    esac
+  if [[ -n "$LMMS_LIMIT" && ! "${LMMS_LIMIT,,}" =~ ^(0|all|none)$ ]]; then
+    limit_arg=(--limit "$LMMS_LIMIT")
   fi
 
-  local model_args_for_log
-  model_args_for_log=$(echo "$model_args" | sed -E 's/(api_key=)[^,]*/\1***REDACTED***/g')
-  echo "LMMS model args ($case_name/$vtp_method${vtp_rate:+/r$vtp_rate}): $model_args_for_log"
-  if [[ -n "${OPENAI_API_BASE:-}" ]]; then
-    echo "LMMS OPENAI_API_BASE ($case_name/$vtp_method${vtp_rate:+/r$vtp_rate}): $OPENAI_API_BASE"
-  fi
+  echo "LMMS model args ($case_name/$vtp_method${vtp_rate:+/r$vtp_rate}): model=${MODEL},base_url=${base_url},api_key=***REDACTED***,temperature=0,max_new_tokens=128"
 
   "$LMMS_PYTHON_BIN" -m lmms_eval \
-    --model "$LMMS_MODEL" \
+    --model openai_compatible \
     --model_args "$model_args" \
     --tasks "$LMMS_TASKS" \
     --batch_size "$LMMS_BATCH_SIZE" \
@@ -424,13 +374,12 @@ echo "  bench_max_concurrency  : $BENCH_MAX_CONCURRENCY"
 echo "  images_per_req         : $IMAGES_PER_REQ"
 echo "  lmms_tasks             : $LMMS_TASKS"
 LMMS_LIMIT_DISPLAY="${LMMS_LIMIT:-all}"
-case "${LMMS_LIMIT_DISPLAY,,}" in
-  0|all|none) LMMS_LIMIT_DISPLAY="all" ;;
-esac
+[[ "${LMMS_LIMIT_DISPLAY,,}" =~ ^(0|all|none)$ ]] && LMMS_LIMIT_DISPLAY="all"
 echo "  lmms_limit             : $LMMS_LIMIT_DISPLAY"
 echo "  lmms_batch_size        : $LMMS_BATCH_SIZE"
 echo "  vtp_methods            : $VTP_METHODS"
 echo "  vtp_rates              : $VTP_RATES"
+echo "  prune_arch_expect_re   : $PRUNE_ARCH_EXPECT_RE"
 echo "  log_root               : ${RUN_ROOT#$REPO_ROOT/}"
 echo "  eval_root              : ${EVAL_ROOT#$REPO_ROOT/}"
 echo "  table_summary          : ${TABLE_SUMMARY_LOG#$REPO_ROOT/}"
@@ -439,25 +388,27 @@ echo "  table_summary          : ${TABLE_SUMMARY_LOG#$REPO_ROOT/}"
 echo "# LMMS Table Summary ($RUN_STAMP)" >> "$TABLE_SUMMARY_LOG"
 echo >> "$TABLE_SUMMARY_LOG"
 
-preflight
+preflight_lmms_tasks
 
 for spec in "${CASES[@]}"; do
   IFS='|' read -r case_name topology gpu_e gpu_p gpu_d <<< "$spec"
   for vtp_method in $VTP_METHODS; do
     validate_method "$vtp_method"
+
     if [[ "$vtp_method" == "none" ]]; then
       start_case "$case_name" "$topology" "$gpu_e" "$gpu_p" "$gpu_d" "$vtp_method"
       run_lmms "$case_name" "$vtp_method"
       stop_case
-    else
-      for vtp_rate in $VTP_RATES; do
-        validate_rate "$vtp_rate"
-        start_case "$case_name" "$topology" "$gpu_e" "$gpu_p" "$gpu_d" "$vtp_method" "$vtp_rate"
-        verify_prune_architecture_ready "$case_name" "$vtp_method" "$vtp_rate"
-        run_lmms "$case_name" "$vtp_method" "$vtp_rate"
-        stop_case
-      done
+      continue
     fi
+
+    for vtp_rate in $VTP_RATES; do
+      validate_rate "$vtp_rate"
+      start_case "$case_name" "$topology" "$gpu_e" "$gpu_p" "$gpu_d" "$vtp_method" "$vtp_rate"
+      verify_prune_architecture_ready "$case_name" "$vtp_method" "$vtp_rate"
+      run_lmms "$case_name" "$vtp_method" "$vtp_rate"
+      stop_case
+    done
   done
 done
 
