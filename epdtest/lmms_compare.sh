@@ -84,6 +84,32 @@ pick_vllm_bin() {
 LMMS_PYTHON_BIN="$(pick_python_bin)"
 REAL_VLLM_BIN="$(pick_vllm_bin)"
 
+if command -v rg >/dev/null 2>&1; then
+  LOG_SEARCH_TOOL="rg"
+else
+  LOG_SEARCH_TOOL="grep"
+fi
+
+log_match_re() {
+  local pattern="$1"
+  local file="$2"
+  if [[ "$LOG_SEARCH_TOOL" == "rg" ]]; then
+    rg -Eq "$pattern" "$file"
+  else
+    grep -Eq "$pattern" "$file"
+  fi
+}
+
+log_match_line_numbers_re() {
+  local pattern="$1"
+  local file="$2"
+  if [[ "$LOG_SEARCH_TOOL" == "rg" ]]; then
+    rg -nE "$pattern" "$file"
+  else
+    grep -nE "$pattern" "$file"
+  fi
+}
+
 mkdir -p "$HF_HOME" "$HF_DATASETS_CACHE" "$HUGGINGFACE_HUB_CACHE" "$RUN_ROOT" "$EVAL_ROOT"
 
 CURRENT_GROUP_PID=""
@@ -166,19 +192,19 @@ verify_prune_architecture_ready() {
     local prefill_log="$run_dir/prefill.log"
 
     if [[ -f "$prefill_log" ]]; then
-      if rg -Eq "Resolved architecture(s)?: .*(${PRUNE_ARCH_EXPECT_RE})" "$prefill_log" || \
-         rg -Eq "(${PRUNE_ARCH_EXPECT_RE})" "$prefill_log"; then
+      if log_match_re "Resolved architecture(s)?: .*(${PRUNE_ARCH_EXPECT_RE})" "$prefill_log" || \
+         log_match_re "(${PRUNE_ARCH_EXPECT_RE})" "$prefill_log"; then
         echo "Prune architecture verified ($case_tag): matched /${PRUNE_ARCH_EXPECT_RE}/"
         return 0
       fi
 
-      if rg -Eq "Resolved architecture(s)?:" "$prefill_log"; then
+      if log_match_re "Resolved architecture(s)?:" "$prefill_log"; then
         echo "Expected prune architecture but got different resolved architecture ($case_tag)." >&2
-        rg -n "Resolved architecture(s)?:" "$prefill_log" >&2 || true
+        log_match_line_numbers_re "Resolved architecture(s)?:" "$prefill_log" >&2 || true
         return 1
       fi
 
-      if rg -q "vllm/multimodal/evs.py|qwen2_5_vl.py\", line 1391|IndexError: index 0 is out of bounds" "$prefill_log"; then
+      if log_match_re "vllm/multimodal/evs.py|qwen2_5_vl.py\", line 1391|IndexError: index 0 is out of bounds" "$prefill_log"; then
         echo "Detected legacy EVS/base mRoPE traceback in prefill ($case_tag)." >&2
         tail -n 120 "$prefill_log" >&2 || true
         return 1
