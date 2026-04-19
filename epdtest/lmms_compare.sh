@@ -11,20 +11,20 @@ RUN_BENCHMARK="${RUN_BENCHMARK:-randommm}"
 PROXY_PORT="${PROXY_PORT:-10001}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-600}"
 SERVER_READY_TIMEOUT_SECONDS="${SERVER_READY_TIMEOUT_SECONDS:-900}"
-BENCH_REQUEST_RATE="${BENCH_REQUEST_RATE:-4}"
+BENCH_REQUEST_RATE="${BENCH_REQUEST_RATE:-32}"
 BENCH_MAX_CONCURRENCY="${BENCH_MAX_CONCURRENCY:-32}"
-IMAGES_PER_REQ="${IMAGES_PER_REQ:-1}"
 NUM_PROMPTS="${NUM_PROMPTS:-300}"
+
+# Pruning sweep
+IMAGES_PER_REQ="${IMAGES_PER_REQ:-1 2 4 8}"
+VTP_METHODS="${VTP_METHODS:-none visionzip}"
+VTP_RATES="${VTP_RATES:-0.1 0.3 0.5 0.7 0.9}"
 
 # LMMS config
 LMMS_TASKS="${LMMS_TASKS:-mmmu_val}"
 LMMS_LIMIT="${LMMS_LIMIT:-}"
 LMMS_BATCH_SIZE="${LMMS_BATCH_SIZE:-1}"
 OPENAI_API_KEY="${OPENAI_API_KEY:-EMPTY}"
-
-# Pruning sweep
-VTP_METHODS="${VTP_METHODS:-none visionzip}"
-VTP_RATES="${VTP_RATES:-0.3 0.5 0.7 0.9}"
 
 # Cache/output
 HF_HOME="${HF_HOME:-/workspace/.hf_cache}"
@@ -40,6 +40,14 @@ TABLE_SUMMARY_LOG="$EVAL_ROOT/lmms_tables_summary.md"
 # Cases: case_name|topology|gpu_e|gpu_p|gpu_d
 CASES=(
   "1e1p1d_e0_p1_d2|1e1p1d|0|1|2"
+  # "1e1pNd_e0_p1_d0-2|1e1pNd|0|1|0,2"
+  # "1e1pNd_d_preempt_e0_p1_d0-2|1e1pNd_d_preempt|0|1|0,2"
+  # "Ne1p1d_e0-1_p1_d2|Ne1p1d|0,1|1|2"
+  # "Ne1p1d_e0-2_p1_d2|Ne1p1d|0,2|1|2"
+  # "Ne1p1d_e0-1-2_p1_d2|Ne1p1d|0,1,2|1|2"
+  # "Ne1p1d_pd_preempt_e0-1-2_p1_d2|Ne1p1d_pd_preempt|0,1,2|1|2"
+  # "Ne1pNd_e0-1_p1_d0-2|Ne1pNd|0,1|1|0,2"
+  # "Ne1pNd_pd_preempt_e0-1_p1_d0-2|Ne1pNd_pd_preempt|0,1|1|0,2"
 )
 
 infer_prune_arch_expect_re() {
@@ -233,10 +241,11 @@ WRAP
 }
 
 start_case() {
-  local case_name="$1" topology="$2" gpu_e="$3" gpu_p="$4" gpu_d="$5" vtp_method="$6" vtp_rate="${7:-}"
+  local case_name="$1" topology="$2" gpu_e="$3" gpu_p="$4" gpu_d="$5" vtp_method="$6" images_per_req="$7" vtp_rate="${8:-}"
 
   local case_root="$RUN_ROOT/$case_name/$vtp_method"
   [[ -n "$vtp_rate" ]] && case_root="$case_root/r${vtp_rate//./p}"
+  case_root="$case_root/ipr${images_per_req}"
 
   local case_run_dir="$case_root/serve_run"
   local case_log="$case_root/launcher.log"
@@ -251,6 +260,7 @@ start_case() {
   echo "==== CASE: $case_name ===="
   echo "topology=$topology GPU_E=$gpu_e GPU_P=$gpu_p GPU_D=$gpu_d"
   echo "vt_method=$vtp_method vt_rate=${vtp_rate:-n/a}"
+  echo "images_per_req=$images_per_req"
   echo "run_dir=${case_run_dir#$REPO_ROOT/}"
 
   local -a run_env=(
@@ -263,12 +273,13 @@ start_case() {
     BENCH_MAX_CONCURRENCY="$BENCH_MAX_CONCURRENCY"
     BENCHMARK="$RUN_BENCHMARK"
     MODEL="$MODEL"
-    IMAGES_PER_REQ="$IMAGES_PER_REQ"
+    IMAGES_PER_REQ="$images_per_req"
     NUM_PROMPTS="$NUM_PROMPTS"
     ENFORCE_EAGER=1
     GPU_E="$gpu_e"
     GPU_P="$gpu_p"
     GPU_D="$gpu_d"
+    PROXY_PORT="$PROXY_PORT"
     LOG_PATH="$case_run_dir"
     RUN_DIR="$case_run_dir"
   )
@@ -283,7 +294,7 @@ start_case() {
     bash ./epdtest/run.sh \
       --topology "$topology" \
       --benchmark "$RUN_BENCHMARK" \
-      --images-per-req "$IMAGES_PER_REQ" \
+      --images-per-req "$images_per_req" \
       --visual-token-pruning-method "$vtp_method" \
       > "$case_log" 2>&1 &
 
@@ -322,6 +333,10 @@ validate_rate() {
   [[ "$1" =~ ^[0-9]*\.?[0-9]+$ ]] || { echo "Invalid visual-token pruning rate: $1" >&2; exit 2; }
 }
 
+validate_images_per_req() {
+  [[ "$1" =~ ^[0-9]+$ ]] || { echo "Invalid images-per-req: $1" >&2; exit 2; }
+}
+
 extract_tables() {
   local in_log="$1" out_log="$2"
   awk '
@@ -346,9 +361,10 @@ extract_tables() {
 }
 
 run_lmms() {
-  local case_name="$1" vtp_method="$2" vtp_rate="${3:-}"
+  local case_name="$1" vtp_method="$2" images_per_req="$3" vtp_rate="${4:-}"
   local outdir="$EVAL_ROOT/$case_name/$vtp_method"
   [[ -n "$vtp_rate" ]] && outdir="$outdir/r${vtp_rate//./p}"
+  outdir="$outdir/ipr${images_per_req}"
 
   local lmms_log="$outdir/lmms_eval.log"
   local table_log="$outdir/lmms_tables.log"
@@ -365,7 +381,7 @@ run_lmms() {
     limit_arg=(--limit "$LMMS_LIMIT")
   fi
 
-  echo "LMMS model args ($case_name/$vtp_method${vtp_rate:+/r$vtp_rate}): model=${MODEL},base_url=${base_url},api_key=***REDACTED***,temperature=0,max_new_tokens=128"
+  echo "LMMS model args ($case_name/$vtp_method${vtp_rate:+/r$vtp_rate}/ipr${images_per_req}): model=${MODEL},base_url=${base_url},api_key=***REDACTED***,temperature=0,max_new_tokens=128"
 
   "$LMMS_PYTHON_BIN" -m lmms_eval \
     --model openai_compatible \
@@ -379,7 +395,7 @@ run_lmms() {
   extract_tables "$lmms_log" "$table_log"
 
   {
-    echo "## $case_name | method=$vtp_method | rate=${vtp_rate:--}"
+    echo "## $case_name | method=$vtp_method | rate=${vtp_rate:--} | ipr=$images_per_req"
     echo
     cat "$table_log"
     echo
@@ -418,22 +434,25 @@ preflight_lmms_tasks
 
 for spec in "${CASES[@]}"; do
   IFS='|' read -r case_name topology gpu_e gpu_p gpu_d <<< "$spec"
-  for vtp_method in $VTP_METHODS; do
-    validate_method "$vtp_method"
+  for images_per_req in $IMAGES_PER_REQ; do
+    validate_images_per_req "$images_per_req"
+    for vtp_method in $VTP_METHODS; do
+      validate_method "$vtp_method"
 
-    if [[ "$vtp_method" == "none" ]]; then
-      start_case "$case_name" "$topology" "$gpu_e" "$gpu_p" "$gpu_d" "$vtp_method"
-      run_lmms "$case_name" "$vtp_method"
-      stop_case
-      continue
-    fi
+      if [[ "$vtp_method" == "none" ]]; then
+        start_case "$case_name" "$topology" "$gpu_e" "$gpu_p" "$gpu_d" "$vtp_method" "$images_per_req"
+        run_lmms "$case_name" "$vtp_method" "$images_per_req"
+        stop_case
+        continue
+      fi
 
-    for vtp_rate in $VTP_RATES; do
-      validate_rate "$vtp_rate"
-      start_case "$case_name" "$topology" "$gpu_e" "$gpu_p" "$gpu_d" "$vtp_method" "$vtp_rate"
-      verify_prune_architecture_ready "$case_name" "$vtp_method" "$vtp_rate"
-      run_lmms "$case_name" "$vtp_method" "$vtp_rate"
-      stop_case
+      for vtp_rate in $VTP_RATES; do
+        validate_rate "$vtp_rate"
+        start_case "$case_name" "$topology" "$gpu_e" "$gpu_p" "$gpu_d" "$vtp_method" "$images_per_req" "$vtp_rate"
+        verify_prune_architecture_ready "$case_name" "$vtp_method" "$vtp_rate"
+        run_lmms "$case_name" "$vtp_method" "$images_per_req" "$vtp_rate"
+        stop_case
+      done
     done
   done
 done
