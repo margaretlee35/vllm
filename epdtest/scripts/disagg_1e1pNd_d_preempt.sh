@@ -275,52 +275,15 @@ PY
 
 
 resolve_kv_connector() {
-    case "${KV_CONNECTOR,,}" in
-        auto)
-            if [[ ${#DECODE_GPUS[@]} -gt 1 ]]; then
-                KV_CONNECTOR_NAME="ExampleConnector"
-                echo "KV_CONNECTOR=auto resolved to ExampleConnector for multi-decode topology."
-            elif detect_nixl_available; then
-                KV_CONNECTOR_NAME="NixlConnector"
-                echo "KV_CONNECTOR=auto resolved to NixlConnector."
-            else
-                KV_CONNECTOR_NAME="ExampleConnector"
-                echo "KV_CONNECTOR=auto resolved to ExampleConnector because NIXL is unavailable."
-            fi
-            ;;
-        nixl|nixlconnector)
-            KV_CONNECTOR_NAME="NixlConnector"
-            ;;
-        example|exampleconnector)
-            KV_CONNECTOR_NAME="ExampleConnector"
-            ;;
-        *)
-            die "Unsupported KV_CONNECTOR: $KV_CONNECTOR (expected auto, nixl, or example)"
-            ;;
-    esac
-
-    if [[ "$KV_CONNECTOR_NAME" == "NixlConnector" && ${#DECODE_GPUS[@]} -gt 1 ]]; then
-        die "NixlConnector is currently configured for 1P1D only in this script. For 1e1pNd, use KV_CONNECTOR=example (or KV_CONNECTOR=auto)."
-    fi
-
-    if [[ "$KV_CONNECTOR_NAME" == "NixlConnector" ]]; then
-        PREFILL_KV_TRANSFER_CONFIG='{"kv_connector":"NixlConnector","kv_role":"kv_producer"}'
-        DECODE_KV_TRANSFER_CONFIG='{"kv_connector":"NixlConnector","kv_role":"kv_consumer"}'
-    else
-        PREFILL_KV_TRANSFER_CONFIG='{"kv_connector":"ExampleConnector","kv_role":"kv_producer","kv_connector_extra_config":{"shared_storage_path":"'"$KV_SHARED_STORAGE_PATH"'"}}'
-        DECODE_KV_TRANSFER_CONFIG='{"kv_connector":"ExampleConnector","kv_role":"kv_consumer","kv_connector_extra_config":{"shared_storage_path":"'"$KV_SHARED_STORAGE_PATH"'"}}'
-    fi
+    KV_CONNECTOR_NAME="NixlConnector"
+    PREFILL_KV_TRANSFER_CONFIG='{"kv_connector":"NixlConnector","kv_role":"kv_producer"}'
+    DECODE_KV_TRANSFER_CONFIG='{"kv_connector":"NixlConnector","kv_role":"kv_consumer"}'
 }
 
 
 prepare_storage_paths() {
     rm -rf "$EC_SHARED_STORAGE_PATH"
     mkdir -p "$EC_SHARED_STORAGE_PATH"
-
-    if [[ "$KV_CONNECTOR_NAME" == "ExampleConnector" ]]; then
-        rm -rf "$KV_SHARED_STORAGE_PATH"
-        mkdir -p "$KV_SHARED_STORAGE_PATH"
-    fi
 }
 
 
