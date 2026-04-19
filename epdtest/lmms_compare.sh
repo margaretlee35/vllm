@@ -11,14 +11,14 @@ RUN_BENCHMARK="${RUN_BENCHMARK:-randommm}"
 PROXY_PORT="${PROXY_PORT:-10001}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-600}"
 SERVER_READY_TIMEOUT_SECONDS="${SERVER_READY_TIMEOUT_SECONDS:-900}"
-BENCH_REQUEST_RATE="${BENCH_REQUEST_RATE:-32}"
+BENCH_REQUEST_RATE="${BENCH_REQUEST_RATE:-8}"
 BENCH_MAX_CONCURRENCY="${BENCH_MAX_CONCURRENCY:-32}"
 NUM_PROMPTS="${NUM_PROMPTS:-300}"
 
 # Pruning sweep
-IMAGES_PER_REQ="${IMAGES_PER_REQ:-1 2 4 8}"
+IMAGES_PER_REQ="${IMAGES_PER_REQ:-32}"
 VTP_METHODS="${VTP_METHODS:-none visionzip}"
-VTP_RATES="${VTP_RATES:-0.1 0.3 0.5 0.7 0.9}"
+VTP_RATES="${VTP_RATES:-0.1 0.5 0.9}"
 
 # LMMS config
 LMMS_TASKS="${LMMS_TASKS:-mmmu_val}"
@@ -44,8 +44,8 @@ CASES=(
   # "1e1pNd_d_preempt_e0_p1_d0-2|1e1pNd_d_preempt|0|1|0,2"
   # "Ne1p1d_e0-1_p1_d2|Ne1p1d|0,1|1|2"
   # "Ne1p1d_e0-2_p1_d2|Ne1p1d|0,2|1|2"
-  # "Ne1p1d_e0-1-2_p1_d2|Ne1p1d|0,1,2|1|2"
-  # "Ne1p1d_pd_preempt_e0-1-2_p1_d2|Ne1p1d_pd_preempt|0,1,2|1|2"
+  "Ne1p1d_e0-1-2_p1_d2|Ne1p1d|0,1,2|1|2"
+  "Ne1p1d_pd_preempt_e0-1-2_p1_d2|Ne1p1d_pd_preempt|0,1,2|1|2"
   # "Ne1pNd_e0-1_p1_d0-2|Ne1pNd|0,1|1|0,2"
   # "Ne1pNd_pd_preempt_e0-1_p1_d0-2|Ne1pNd_pd_preempt|0,1|1|0,2"
 )
