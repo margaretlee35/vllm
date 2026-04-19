@@ -18,7 +18,7 @@ NUM_PROMPTS="${NUM_PROMPTS:-300}"
 # Pruning sweep
 IMAGES_PER_REQ="${IMAGES_PER_REQ:-32}"
 VTP_METHODS="${VTP_METHODS:-none visionzip}"
-VTP_RATES="${VTP_RATES:-0.1 0.5 0.9}"
+VTP_RATES="${VTP_RATES:-0.5 0.9}"
 
 # Output layout
 LOG_PATH="${LOG_PATH:-$REPO_ROOT/epdtest/logs/vtp}"
