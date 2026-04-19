@@ -23,7 +23,7 @@ LMMS_BATCH_SIZE="${LMMS_BATCH_SIZE:-1}"
 OPENAI_API_KEY="${OPENAI_API_KEY:-EMPTY}"
 
 # Pruning sweep
-VTP_METHODS="${VTP_METHODS:-visionzip}"
+VTP_METHODS="${VTP_METHODS:-none visionzip}"
 VTP_RATES="${VTP_RATES:-0.3 0.5 0.7 0.9}"
 
 # Cache/output
