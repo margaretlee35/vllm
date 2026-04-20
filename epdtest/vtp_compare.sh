@@ -30,13 +30,13 @@ TABLE_SUMMARY_LOG="$EVAL_ROOT/vtp_sweep_summary.md"
 
 # Cases: case_name|topology|gpu_e|gpu_p|gpu_d
 CASES=(
-  "1e1p1d_e0_p1_d2|1e1p1d|0|1|2"
+  # "1e1p1d_e0_p1_d2|1e1p1d|0|1|2"
   # "1e1pNd_e0_p1_d0-2|1e1pNd|0|1|0,2"
   # "1e1pNd_d_preempt_e0_p1_d0-2|1e1pNd_d_preempt|0|1|0,2"
   # "Ne1p1d_e0-1_p1_d2|Ne1p1d|0,1|1|2"
   # "Ne1p1d_e0-2_p1_d2|Ne1p1d|0,2|1|2"
   "Ne1p1d_e0-1-2_p1_d2|Ne1p1d|0,1,2|1|2"
-  "Ne1p1d_pd_preempt_e0-1-2_p1_d2|Ne1p1d_pd_preempt|0,1,2|1|2"
+  # "Ne1p1d_pd_preempt_e0-1-2_p1_d2|Ne1p1d_pd_preempt|0,1,2|1|2"
   # "Ne1pNd_e0-1_p1_d0-2|Ne1pNd|0,1|1|0,2"
   # "Ne1pNd_pd_preempt_e0-1_p1_d0-2|Ne1pNd_pd_preempt|0,1|1|0,2"
 )
@@ -293,7 +293,7 @@ extract_fail_cause() {
     return
   fi
   local cause
-  cause="$(grep -Ei "Traceback|RuntimeError|ValueError|EngineCore failed|ERROR|address already in use|port collision|No CUDA runtime|out of memory|NIXL is not available|failed to start|cannot open shared object|Segfault|KeyError" "$launcher_log" 2>/dev/null | tail -n 1 || true)"
+  cause="$(grep -Ei "Traceback|RuntimeError|ValueError|EngineCore failed|ERROR|address already in use|Port [0-9]+ is already in use|port collision|No CUDA runtime|out of memory|NIXL is not available|failed to start|cannot open shared object|Segfault|KeyError" "$launcher_log" 2>/dev/null | tail -n 1 || true)"
   if [[ -n "$cause" ]]; then
     echo "$cause"
   else

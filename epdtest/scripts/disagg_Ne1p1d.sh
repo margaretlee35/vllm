@@ -2,22 +2,18 @@
 set -euo pipefail
 
 # Shared Ne1p1d runner for both BENCHMARK=simple and BENCHMARK=randommm.
-# This topology runs:
-# - N encoder instances (E1..EN)
-# - 1 prefill instance (P)
-# - 1 decode instance (D)
-#
-# Multi-encoder is controlled via comma-separated GPU_E, e.g. GPU_E="0,2".
+# This topology runs N encoders (GPU_E list), 1 prefill (GPU_P), and 1 decode (GPU_D).
 
 # -----------------------------------------------------------------------------
 # Configuration defaults
 # -----------------------------------------------------------------------------
 
 declare -a PIDS=()
-
 declare -a ENCODE_GPUS=()
 declare -a ENCODE_PORT_LIST=()
 declare -a ENCODE_LOGS=()
+declare -a CRITICAL_PIDS=()
+declare -a CRITICAL_NAMES=()
 
 MODEL="${MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}"
 LOG_PATH="${LOG_PATH:-./epdtest/logs}"
@@ -35,13 +31,12 @@ GPU_P="${GPU_P:-1}"
 GPU_D="${GPU_D:-2}"
 
 EC_SHARED_STORAGE_PATH="${EC_SHARED_STORAGE_PATH:-/tmp/ec_cache}"
-KV_SHARED_STORAGE_PATH="${KV_SHARED_STORAGE_PATH:-/tmp/kv_cache}"
-KV_CONNECTOR="${KV_CONNECTOR:-auto}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-12000}"
 
 NUM_PROMPTS="${NUM_PROMPTS:-300}"
 BENCH_REQUEST_RATE="${BENCH_REQUEST_RATE:-32}"
 BENCH_MAX_CONCURRENCY="${BENCH_MAX_CONCURRENCY:-32}"
+BENCH_MIN_TOKENS="${BENCH_MIN_TOKENS:-1}"
 PD_MAX_MODEL_LEN="${PD_MAX_MODEL_LEN:-65536}"
 PD_MAX_NUM_BATCHED_TOKENS="${PD_MAX_NUM_BATCHED_TOKENS:-32768}"
 PD_MAX_NUM_SEQS="${PD_MAX_NUM_SEQS:-32}"
@@ -55,6 +50,7 @@ VISUAL_TOKEN_PRUNING_METHOD="${VISUAL_TOKEN_PRUNING_METHOD:-}"
 IMAGES_PER_REQ="${IMAGES_PER_REQ:-1}"
 HF_DATASET_PATH="${HF_DATASET_PATH:-lmarena-ai/VisionArena-Chat}"
 METRICS_SAMPLING_INTERVAL_SECONDS="${METRICS_SAMPLING_INTERVAL_SECONDS:-1}"
+FAIL_FAST_POLL_SECONDS="${FAIL_FAST_POLL_SECONDS:-1}"
 ENFORCE_EAGER="${ENFORCE_EAGER:-0}"
 declare -a VLLM_EAGER_ARGS=()
 case "${ENFORCE_EAGER,,}" in
@@ -63,25 +59,13 @@ case "${ENFORCE_EAGER,,}" in
         ;;
 esac
 
-KV_CONNECTOR_NAME=""
-PREFILL_KV_TRANSFER_CONFIG=""
-DECODE_KV_TRANSFER_CONFIG=""
 ENCODE_URLS_CSV=""
 MONITOR_GPU_CSV=""
-
-START_TIME=$(date +"%Y%m%d_%H%M%S")
-RUN_DIR="${RUN_DIR:-$LOG_PATH/$START_TIME}"
-mkdir -p "$RUN_DIR"
-P_LOG="$RUN_DIR/prefill.log"
-D_LOG="$RUN_DIR/decode.log"
-PROXY_LOG="$RUN_DIR/proxy.log"
-
 
 die() {
     echo "$*" >&2
     exit 1
 }
-
 
 validate_benchmark() {
     case "${BENCHMARK,,}" in
@@ -93,13 +77,11 @@ validate_benchmark() {
     esac
 }
 
-
 trim_spaces() {
     local value="$1"
     # shellcheck disable=SC2001
     echo "$(echo "$value" | sed 's/^ *//; s/ *$//')"
 }
-
 
 contains_value() {
     local needle="$1"
@@ -113,11 +95,11 @@ contains_value() {
     return 1
 }
 
-
-parse_encode_gpus() {
+build_encoder_layout() {
     ENCODE_GPUS=()
+    ENCODE_PORT_LIST=()
 
-    local raw_gpus=()
+    local -a raw_gpus=()
     local item
     IFS=',' read -ra raw_gpus <<< "$GPU_E"
 
@@ -131,15 +113,10 @@ parse_encode_gpus() {
     if [[ ${#ENCODE_GPUS[@]} -eq 0 ]]; then
         die "GPU_E must contain at least one GPU id (example: GPU_E=0 or GPU_E=0,2)"
     fi
-}
-
-
-parse_encode_ports() {
-    ENCODE_PORT_LIST=()
 
     local idx
     if [[ -n "$ENCODE_PORTS" ]]; then
-        local raw_ports=()
+        local -a raw_ports=()
         local port
         IFS=',' read -ra raw_ports <<< "$ENCODE_PORTS"
         for port in "${raw_ports[@]}"; do
@@ -155,20 +132,15 @@ parse_encode_ports() {
     else
         local candidate_port="$ENCODE_PORT"
         local -a reserved_ports=("$PREFILL_PORT" "$DECODE_PORT" "$PROXY_PORT")
-        local adjusted=0
+
         for idx in "${!ENCODE_GPUS[@]}"; do
             while contains_value "$candidate_port" "${reserved_ports[@]}" || \
                   contains_value "$candidate_port" "${ENCODE_PORT_LIST[@]}"; do
-                adjusted=1
                 candidate_port=$((candidate_port + 1))
             done
             ENCODE_PORT_LIST+=("$candidate_port")
             candidate_port=$((candidate_port + 1))
         done
-
-        if [[ "$adjusted" == "1" ]]; then
-            echo "Adjusted encoder ports to avoid collisions with prefill/decode/proxy ports."
-        fi
     fi
 
     local port
@@ -177,19 +149,13 @@ parse_encode_ports() {
             die "Encoder port collision detected: ${port}. Choose non-overlapping ENCODE_PORT/ENCODE_PORTS."
         fi
     done
-}
 
-
-build_encode_layout() {
     ENCODE_LOGS=()
-
-    local idx
     for idx in "${!ENCODE_GPUS[@]}"; do
         ENCODE_LOGS+=("$RUN_DIR/encoder_${idx}.log")
     done
 
     local -a encode_urls=()
-    local port
     for port in "${ENCODE_PORT_LIST[@]}"; do
         encode_urls+=("http://localhost:$port")
     done
@@ -206,143 +172,23 @@ build_encode_layout() {
     MONITOR_GPU_CSV=$(IFS=','; echo "${unique_gpus[*]}")
 }
 
+export UCX_TLS=all
+export UCX_NET_DEVICES=all
 
-detect_nixl_available() {
-    local python_bin
-    if command -v python3 >/dev/null 2>&1; then
-        python_bin="python3"
-    elif command -v python >/dev/null 2>&1; then
-        python_bin="python"
-    else
-        return 1
+ulimit -n "${ULIMIT_NOFILE:-65535}" >/dev/null 2>&1 || true
+
+GIT_ROOT=$(git rev-parse --show-toplevel)
+PRUNE_CONFIG_FILE="${PRUNE_CONFIG_FILE:-$GIT_ROOT/epdtest/visual_token_pruning_configs.json}"
+PRUNE_CONFIG_PARSER="${PRUNE_CONFIG_PARSER:-$GIT_ROOT/epdtest/parse_config.py}"
+
+ensure_pruning_config_files() {
+    if [[ ! -f "$PRUNE_CONFIG_FILE" ]]; then
+        die "Missing pruning config file: $PRUNE_CONFIG_FILE"
     fi
-
-    "$python_bin" - <<'PY'
-import importlib.util
-import sys
-
-try:
-    available = importlib.util.find_spec("nixl._api") is not None
-except ModuleNotFoundError:
-    available = False
-
-sys.exit(0 if available else 1)
-PY
-}
-
-
-resolve_kv_connector() {
-    KV_CONNECTOR_NAME="NixlConnector"
-    PREFILL_KV_TRANSFER_CONFIG='{"kv_connector":"NixlConnector","kv_role":"kv_producer"}'
-    DECODE_KV_TRANSFER_CONFIG='{"kv_connector":"NixlConnector","kv_role":"kv_consumer"}'
-}
-
-
-prepare_storage_paths() {
-    rm -rf "$EC_SHARED_STORAGE_PATH"
-    mkdir -p "$EC_SHARED_STORAGE_PATH"
-}
-
-
-wait_for_server() {
-    local port=$1
-    timeout "$TIMEOUT_SECONDS" bash -c "
-        until curl -s localhost:$port/v1/chat/completions > /dev/null; do
-            sleep 1
-        done" && return 0 || return 1
-}
-
-
-port_in_use() {
-    local port=$1
-    ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]${port}$"
-}
-
-
-reserve_nixl_side_channel_ports() {
-    if [[ "$KV_CONNECTOR_NAME" != "NixlConnector" ]]; then
-        return
-    fi
-
-    while port_in_use "$PREFILL_NIXL_SIDE_CHANNEL_PORT" || port_in_use "$DECODE_NIXL_SIDE_CHANNEL_PORT"; do
-        PREFILL_NIXL_SIDE_CHANNEL_PORT=$((PREFILL_NIXL_SIDE_CHANNEL_PORT + 1))
-        DECODE_NIXL_SIDE_CHANNEL_PORT=$((DECODE_NIXL_SIDE_CHANNEL_PORT + 1))
-    done
-}
-
-
-log_gpu_sm_utilization() {
-    local ts=$1
-    local output
-    if ! command -v nvidia-smi >/dev/null 2>&1; then
-        return 0
-    fi
-    output=$(nvidia-smi \
-        --query-gpu=index,utilization.gpu,utilization.memory,memory.used,power.draw \
-        --format=csv,noheader,nounits \
-        -i "$MONITOR_GPU_CSV" 2>/dev/null || true)
-    if [[ -z "$output" ]]; then
-        return 0
-    fi
-    while IFS=',' read -r gpu_index sm_util mem_util mem_used power_draw; do
-        gpu_index=$(echo "$gpu_index" | xargs)
-        sm_util=$(echo "$sm_util" | xargs)
-        mem_util=$(echo "$mem_util" | xargs)
-        mem_used=$(echo "$mem_used" | xargs)
-        power_draw=$(echo "$power_draw" | xargs)
-
-        local -a roles=()
-        if contains_value "$gpu_index" "${ENCODE_GPUS[@]}"; then
-            roles+=("encoder")
-        fi
-        if [[ "$gpu_index" == "$GPU_P" ]]; then
-            roles+=("prefill")
-        fi
-        if [[ "$gpu_index" == "$GPU_D" ]]; then
-            roles+=("decode")
-        fi
-        local role
-        if [[ "${#roles[@]}" -eq 0 ]]; then
-            role="unknown"
-        else
-            role=$(IFS='+'; echo "${roles[*]}")
-        fi
-        echo "$ts,$role,$gpu_index,$sm_util,$mem_util,$mem_used,$power_draw" >> "$SM_LOG"
-    done <<< "$output"
-}
-
-
-cleanup() {
-    local rc=$?
-    set +e
-    trap - EXIT INT TERM USR1
-    for pid in "${PIDS[@]}"; do
-        kill "$pid" 2>/dev/null || true
-    done
-    sleep 2
-    for pid in "${PIDS[@]}"; do
-        kill -9 "$pid" 2>/dev/null || true
-    done
-    kill -- -$$ 2>/dev/null
-    exit "$rc"
-}
-
-
-print_layout() {
-    echo "Ne1p1d layout"
-    echo "  gpu_encoder_list : $(IFS=','; echo "${ENCODE_GPUS[*]}")"
-    echo "  encoder_ports    : $(IFS=','; echo "${ENCODE_PORT_LIST[*]}")"
-    echo "  gpu_prefill      : $GPU_P"
-    echo "  gpu_decode       : $GPU_D"
-    echo "  kv_connector     : $KV_CONNECTOR_NAME"
-    if [[ "$KV_CONNECTOR_NAME" == "NixlConnector" ]]; then
-        echo "  nixl_prefill_sc  : $PREFILL_NIXL_SIDE_CHANNEL_PORT"
-        echo "  nixl_decode_sc   : $DECODE_NIXL_SIDE_CHANNEL_PORT"
-    else
-        echo "  kv_storage_path  : $KV_SHARED_STORAGE_PATH"
+    if [[ ! -f "$PRUNE_CONFIG_PARSER" ]]; then
+        die "Missing pruning config parser: $PRUNE_CONFIG_PARSER"
     fi
 }
-
 
 apply_visual_token_pruning_config() {
     local raw_method="${1:-}"
@@ -401,7 +247,6 @@ apply_visual_token_pruning_config() {
     fi
 }
 
-
 build_visual_token_pruning_args() {
     declare -g -a VISUAL_TOKEN_PRUNING_ARGS=()
     declare -g -a HF_OVERRIDES_ARGS=()
@@ -434,47 +279,137 @@ build_visual_token_pruning_args() {
     fi
 }
 
+START_TIME=$(date +"%Y%m%d_%H%M%S")
+RUN_DIR="${RUN_DIR:-$LOG_PATH/$START_TIME}"
+mkdir -p "$RUN_DIR"
+P_LOG="$RUN_DIR/prefill.log"
+D_LOG="$RUN_DIR/decode.log"
+PROXY_LOG="$RUN_DIR/proxy.log"
 
-export UCX_TLS=all
-export UCX_NET_DEVICES=all
-
-ulimit -n "${ULIMIT_NOFILE:-65535}" >/dev/null 2>&1 || true
-
-GIT_ROOT=$(git rev-parse --show-toplevel)
-PRUNE_CONFIG_FILE="${PRUNE_CONFIG_FILE:-$GIT_ROOT/epdtest/visual_token_pruning_configs.json}"
-PRUNE_CONFIG_PARSER="${PRUNE_CONFIG_PARSER:-$GIT_ROOT/epdtest/parse_config.py}"
-
-ensure_pruning_config_files() {
-    if [[ ! -f "$PRUNE_CONFIG_FILE" ]]; then
-        die "Missing pruning config file: $PRUNE_CONFIG_FILE"
-    fi
-    if [[ ! -f "$PRUNE_CONFIG_PARSER" ]]; then
-        die "Missing pruning config parser: $PRUNE_CONFIG_PARSER"
-    fi
+wait_for_server() {
+    local port=$1
+    timeout "$TIMEOUT_SECONDS" bash -c "
+        until curl -s localhost:$port/v1/chat/completions > /dev/null; do
+            sleep 1
+        done" && return 0 || return 1
 }
 
+port_in_use() {
+    local port=$1
+    ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]${port}$"
+}
+
+ensure_required_ports_free() {
+    local -a required_ports=("${ENCODE_PORT_LIST[@]}" "$PREFILL_PORT" "$DECODE_PORT" "$PROXY_PORT")
+    local port
+    for port in "${required_ports[@]}"; do
+        if port_in_use "$port"; then
+            die "Port ${port} is already in use. Stop stale processes or change ports."
+        fi
+    done
+}
+
+register_critical_pid() {
+    local name="$1"
+    local pid="$2"
+    CRITICAL_NAMES+=("$name")
+    CRITICAL_PIDS+=("$pid")
+}
+
+monitor_critical_processes() {
+    while true; do
+        local idx
+        for idx in "${!CRITICAL_PIDS[@]}"; do
+            local pid="${CRITICAL_PIDS[$idx]}"
+            local name="${CRITICAL_NAMES[$idx]}"
+            if ! kill -0 "$pid" 2>/dev/null; then
+                echo "Critical process exited unexpectedly: ${name} (pid=${pid})" >&2
+                kill -USR1 "$$" 2>/dev/null || true
+                exit 0
+            fi
+        done
+        sleep "$FAIL_FAST_POLL_SECONDS"
+    done
+}
+
+log_gpu_sm_utilization() {
+    local ts=$1
+    local output
+    if ! command -v nvidia-smi >/dev/null 2>&1; then
+        return 0
+    fi
+    output=$(nvidia-smi \
+        --query-gpu=index,utilization.gpu,utilization.memory,memory.used,power.draw \
+        --format=csv,noheader,nounits \
+        -i "$MONITOR_GPU_CSV" 2>/dev/null || true)
+    if [[ -z "$output" ]]; then
+        return 0
+    fi
+    while IFS=',' read -r gpu_index sm_util mem_util mem_used power_draw; do
+        gpu_index=$(echo "$gpu_index" | xargs)
+        sm_util=$(echo "$sm_util" | xargs)
+        mem_util=$(echo "$mem_util" | xargs)
+        mem_used=$(echo "$mem_used" | xargs)
+        power_draw=$(echo "$power_draw" | xargs)
+
+        local -a roles=()
+        if contains_value "$gpu_index" "${ENCODE_GPUS[@]}"; then
+            roles+=("encoder")
+        fi
+        if [[ "$gpu_index" == "$GPU_P" ]]; then
+            roles+=("prefill")
+        fi
+        if [[ "$gpu_index" == "$GPU_D" ]]; then
+            roles+=("decode")
+        fi
+        local role
+        if [[ "${#roles[@]}" -eq 0 ]]; then
+            role="unknown"
+        else
+            role=$(IFS='+'; echo "${roles[*]}")
+        fi
+        echo "$ts,$role,$gpu_index,$sm_util,$mem_util,$mem_used,$power_draw" >> "$SM_LOG"
+    done <<< "$output"
+}
+
+cleanup() {
+    local rc=$?
+    set +e
+    trap - EXIT INT TERM USR1
+    for pid in "${PIDS[@]}"; do
+        kill "$pid" 2>/dev/null || true
+    done
+    sleep 2
+    for pid in "${PIDS[@]}"; do
+        kill -9 "$pid" 2>/dev/null || true
+    done
+    kill -- -$$ 2>/dev/null
+    exit "$rc"
+}
 
 validate_benchmark
 ensure_pruning_config_files
-parse_encode_gpus
-parse_encode_ports
-build_encode_layout
-resolve_kv_connector
-prepare_storage_paths
+build_encoder_layout
 
 trap cleanup EXIT
 trap cleanup INT
 trap cleanup USR1
 trap cleanup TERM
 
+rm -rf "$EC_SHARED_STORAGE_PATH"
+mkdir -p "$EC_SHARED_STORAGE_PATH"
+
 if ! apply_visual_token_pruning_config "${VISUAL_TOKEN_PRUNING_METHOD:-}"; then
     die "Failed to load VISUAL_TOKEN_PRUNING_METHOD config: ${VISUAL_TOKEN_PRUNING_METHOD:-}"
 fi
 
 build_visual_token_pruning_args
-reserve_nixl_side_channel_ports
-print_layout
+ensure_required_ports_free
 
+while port_in_use "$PREFILL_NIXL_SIDE_CHANNEL_PORT" || port_in_use "$DECODE_NIXL_SIDE_CHANNEL_PORT"; do
+    PREFILL_NIXL_SIDE_CHANNEL_PORT=$((PREFILL_NIXL_SIDE_CHANNEL_PORT + 1))
+    DECODE_NIXL_SIDE_CHANNEL_PORT=$((DECODE_NIXL_SIDE_CHANNEL_PORT + 1))
+done
 
 for idx in "${!ENCODE_GPUS[@]}"; do
     encode_gpu="${ENCODE_GPUS[$idx]}"
@@ -482,7 +417,7 @@ for idx in "${!ENCODE_GPUS[@]}"; do
     encode_log="${ENCODE_LOGS[$idx]}"
 
     CUDA_VISIBLE_DEVICES="$encode_gpu" vllm serve "$MODEL" \
-    "${HF_OVERRIDES_ARGS[@]}" \
+        "${HF_OVERRIDES_ARGS[@]}" \
         --gpu-memory-utilization "$ENCODER_GPU_MEMORY_UTILIZATION" \
         --port "$encode_port" \
         "${VLLM_EAGER_ARGS[@]}" \
@@ -501,15 +436,10 @@ for idx in "${!ENCODE_GPUS[@]}"; do
         "${VISUAL_TOKEN_PRUNING_ARGS[@]}" \
         >"${encode_log}" 2>&1 &
     PIDS+=($!)
+    register_critical_pid "encoder_${idx}" "$!"
 done
 
-
-declare -a PREFILL_ENV=("CUDA_VISIBLE_DEVICES=$GPU_P" "UCX_NET_DEVICES=all")
-if [[ "$KV_CONNECTOR_NAME" == "NixlConnector" ]]; then
-    PREFILL_ENV+=("VLLM_NIXL_SIDE_CHANNEL_PORT=$PREFILL_NIXL_SIDE_CHANNEL_PORT")
-fi
-
-env "${PREFILL_ENV[@]}" \
+CUDA_VISIBLE_DEVICES="$GPU_P" UCX_NET_DEVICES=all VLLM_NIXL_SIDE_CHANNEL_PORT="$PREFILL_NIXL_SIDE_CHANNEL_PORT" \
 vllm serve "$MODEL" \
     "${HF_OVERRIDES_ARGS[@]}" \
     --gpu-memory-utilization "$PREFILL_GPU_MEMORY_UTILIZATION" \
@@ -527,18 +457,16 @@ vllm serve "$MODEL" \
             "shared_storage_path": "'"$EC_SHARED_STORAGE_PATH"'"
         }
     }' \
-    --kv-transfer-config "$PREFILL_KV_TRANSFER_CONFIG" \
+    --kv-transfer-config '{
+        "kv_connector": "NixlConnector",
+        "kv_role": "kv_producer"
+    }' \
     "${VISUAL_TOKEN_PRUNING_ARGS[@]}" \
     >"${P_LOG}" 2>&1 &
 PIDS+=($!)
+register_critical_pid "prefill" "$!"
 
-
-declare -a DECODE_ENV=("CUDA_VISIBLE_DEVICES=$GPU_D" "UCX_NET_DEVICES=all")
-if [[ "$KV_CONNECTOR_NAME" == "NixlConnector" ]]; then
-    DECODE_ENV+=("VLLM_NIXL_SIDE_CHANNEL_PORT=$DECODE_NIXL_SIDE_CHANNEL_PORT")
-fi
-
-env "${DECODE_ENV[@]}" \
+CUDA_VISIBLE_DEVICES="$GPU_D" UCX_NET_DEVICES=all VLLM_NIXL_SIDE_CHANNEL_PORT="$DECODE_NIXL_SIDE_CHANNEL_PORT" \
 vllm serve "$MODEL" \
     "${HF_OVERRIDES_ARGS[@]}" \
     --gpu-memory-utilization "$DECODE_GPU_MEMORY_UTILIZATION" \
@@ -549,14 +477,17 @@ vllm serve "$MODEL" \
     --max-num-batched-tokens "$PD_MAX_NUM_BATCHED_TOKENS" \
     --max-num-seqs "$PD_MAX_NUM_SEQS" \
     --allowed-local-media-path "${GIT_ROOT}"/tests/v1/ec_connector/integration \
-    --kv-transfer-config "$DECODE_KV_TRANSFER_CONFIG" \
+    --kv-transfer-config '{
+        "kv_connector": "NixlConnector",
+        "kv_role": "kv_consumer"
+    }' \
     "${VISUAL_TOKEN_PRUNING_ARGS[@]}" \
     >"${D_LOG}" 2>&1 &
 PIDS+=($!)
+register_critical_pid "decode" "$!"
 
-
-for port in "${ENCODE_PORT_LIST[@]}"; do
-    wait_for_server "$port"
+for encode_port in "${ENCODE_PORT_LIST[@]}"; do
+    wait_for_server "$encode_port"
 done
 wait_for_server "$PREFILL_PORT"
 wait_for_server "$DECODE_PORT"
@@ -569,9 +500,12 @@ python "${GIT_ROOT}/examples/online_serving/disaggregated_encoder/disagg_epd_pro
     --decode-servers-urls "http://localhost:$DECODE_PORT" \
     >"${PROXY_LOG}" 2>&1 &
 PIDS+=($!)
+register_critical_pid "proxy" "$!"
 
 wait_for_server "$PROXY_PORT"
 
+monitor_critical_processes &
+PIDS+=($!)
 
 SM_LOG="$RUN_DIR/sm.log"
 echo "timestamp,role,gpu_index,sm_utilization_pct,memory_utilization_pct,memory_used_mib,power_draw_watts" > "$SM_LOG"
@@ -585,7 +519,6 @@ echo "timestamp,role,gpu_index,sm_utilization_pct,memory_utilization_pct,memory_
 ) &
 PIDS+=($!)
 
-
 declare -a BENCH_ARGS=(
     --model "$MODEL"
     --backend openai-chat
@@ -596,6 +529,10 @@ declare -a BENCH_ARGS=(
     --max-concurrency "$BENCH_MAX_CONCURRENCY"
     --port "$PROXY_PORT"
 )
+
+if [[ "${BENCH_MIN_TOKENS:-0}" =~ ^[0-9]+$ ]] && (( BENCH_MIN_TOKENS > 0 )); then
+    BENCH_ARGS+=(--extra-body "{\"min_tokens\": ${BENCH_MIN_TOKENS}}")
+fi
 
 if [[ "$BENCHMARK" == "randommm" ]]; then
     BENCH_ARGS+=(
