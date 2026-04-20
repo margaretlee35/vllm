@@ -9,7 +9,7 @@ cd "$REPO_ROOT"
 MODEL="${MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}"
 RUN_BENCHMARK="${RUN_BENCHMARK:-randommm}"
 PROXY_PORT="${PROXY_PORT:-10001}"
-TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-600}"
+TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-1800}"
 SERVER_READY_TIMEOUT_SECONDS="${SERVER_READY_TIMEOUT_SECONDS:-900}"
 BENCH_REQUEST_RATE="${BENCH_REQUEST_RATE:-8}"
 BENCH_MAX_CONCURRENCY="${BENCH_MAX_CONCURRENCY:-32}"
@@ -31,14 +31,9 @@ TABLE_SUMMARY_LOG="$EVAL_ROOT/vtp_sweep_summary.md"
 # Cases: case_name|topology|gpu_e|gpu_p|gpu_d
 CASES=(
   # "1e1p1d_e0_p1_d2|1e1p1d|0|1|2"
-  # "1e1pNd_e0_p1_d0-2|1e1pNd|0|1|0,2"
-  # "1e1pNd_d_preempt_e0_p1_d0-2|1e1pNd_d_preempt|0|1|0,2"
   # "Ne1p1d_e0-1_p1_d2|Ne1p1d|0,1|1|2"
   # "Ne1p1d_e0-2_p1_d2|Ne1p1d|0,2|1|2"
   "Ne1p1d_e0-1-2_p1_d2|Ne1p1d|0,1,2|1|2"
-  # "Ne1p1d_pd_preempt_e0-1-2_p1_d2|Ne1p1d_pd_preempt|0,1,2|1|2"
-  # "Ne1pNd_e0-1_p1_d0-2|Ne1pNd|0,1|1|0,2"
-  # "Ne1pNd_pd_preempt_e0-1_p1_d0-2|Ne1pNd_pd_preempt|0,1|1|0,2"
 )
 
 infer_prune_arch_expect_re() {
@@ -216,7 +211,7 @@ run_one() {
   local launcher_log="$run_dir/launcher.log"
 
   mkdir -p "$run_dir"
-  echo "--- case=$case_name method=$method rate=${rate:-n/a} topology=$topology GPU_E=$gpu_e GPU_P=$gpu_p GPU_D=$gpu_d ipr=$images_per_req ---"
+  echo "--- case=$case_name method=$method rate=${rate:-n/a} topology=$topology GPU_E=$gpu_e GPU_P=$gpu_p GPU_D=$gpu_d ipr=$images_per_req timeout=${TIMEOUT_SECONDS}s ---"
 
   set +e
   if [[ -n "$rate" ]]; then
@@ -288,6 +283,17 @@ run_one() {
 
 extract_fail_cause() {
   local launcher_log="$1"
+  local run_rc="${2:-}"
+  case "$run_rc" in
+    124)
+      echo "timed out (exit code 124). Increase TIMEOUT_SECONDS."
+      return
+      ;;
+    137)
+      echo "terminated by signal (exit code 137), likely timeout/kill."
+      return
+      ;;
+  esac
   if [[ ! -f "$launcher_log" ]]; then
     echo "unknown (launcher log missing)"
     return
@@ -342,6 +348,7 @@ append_summary_entry() {
 
 run_with_handling() {
   local case_name="$1" topology="$2" gpu_e="$3" gpu_p="$4" gpu_d="$5" method="$6" images_per_req="$7" rate="${8:-}"
+  local run_rc=0
   if run_one "$case_name" "$topology" "$gpu_e" "$gpu_p" "$gpu_d" "$method" "$images_per_req" "$rate"; then
     if ! verify_model_routing "$case_name" "$method" "$images_per_req" "$rate"; then
       local launcher_log
@@ -355,12 +362,14 @@ run_with_handling() {
       append_summary_entry "OK" "$case_name" "$method" "${rate:-n/a}" "$images_per_req" "" "$ok_launcher_log"
     fi
     return 0
+  else
+    run_rc=$?
   fi
 
   local launcher_log
   launcher_log="$(launcher_log_for "$case_name" "$method" "$images_per_req" "$rate")"
   local cause
-  cause="$(extract_fail_cause "$launcher_log")"
+  cause="$(extract_fail_cause "$launcher_log" "$run_rc")"
 
   echo "[fail] case=$case_name method=$method rate=${rate:-n/a} ipr=$images_per_req cause: $cause"
   echo "       launcher: ${launcher_log#$REPO_ROOT/}"

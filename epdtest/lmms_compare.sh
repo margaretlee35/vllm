@@ -9,7 +9,7 @@ cd "$REPO_ROOT"
 MODEL="${MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}"
 RUN_BENCHMARK="${RUN_BENCHMARK:-randommm}"
 PROXY_PORT="${PROXY_PORT:-10001}"
-TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-600}"
+TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-1800}"
 SERVER_READY_TIMEOUT_SECONDS="${SERVER_READY_TIMEOUT_SECONDS:-900}"
 BENCH_REQUEST_RATE="${BENCH_REQUEST_RATE:-8}"
 BENCH_MAX_CONCURRENCY="${BENCH_MAX_CONCURRENCY:-32}"
@@ -20,35 +20,33 @@ IMAGES_PER_REQ="${IMAGES_PER_REQ:-32}"
 VTP_METHODS="${VTP_METHODS:-none visionzip}"
 VTP_RATES="${VTP_RATES:-0.5 0.9}"
 
+# Output layout
+LOG_PATH="${LOG_PATH:-$REPO_ROOT/epdtest/logs/lmms}"
+EVAL_OUTPUT_ROOT="${EVAL_OUTPUT_ROOT:-$LOG_PATH}"
+RUN_STAMP="${RUN_STAMP:-$(date +"%Y%m%d_%H%M%S")}" 
+RUN_ROOT="$LOG_PATH/$RUN_STAMP"
+EVAL_ROOT="$EVAL_OUTPUT_ROOT/$RUN_STAMP"
+TABLE_SUMMARY_LOG="$EVAL_ROOT/lmms_sweep_summary.md"
+
+# Cases: case_name|topology|gpu_e|gpu_p|gpu_d
+CASES=(
+  "1e1p1d_e0_p1_d2|1e1p1d|0|1|2"
+  "Ne1p1d_e0-1_p1_d2|Ne1p1d|0,1|1|2"
+  # "Ne1p1d_e0-2_p1_d2|Ne1p1d|0,2|1|2"
+  "Ne1p1d_e0-1-2_p1_d2|Ne1p1d|0,1,2|1|2"
+)
+
 # LMMS config
 LMMS_TASKS="${LMMS_TASKS:-mmmu_val}"
 LMMS_LIMIT="${LMMS_LIMIT:-}"
 LMMS_BATCH_SIZE="${LMMS_BATCH_SIZE:-1}"
 OPENAI_API_KEY="${OPENAI_API_KEY:-EMPTY}"
 
-# Cache/output
+# HF Cache
 HF_HOME="${HF_HOME:-/workspace/.hf_cache}"
 HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-${HF_HOME}/datasets}"
 HUGGINGFACE_HUB_CACHE="${HUGGINGFACE_HUB_CACHE:-${HF_HOME}/hub}"
-LOG_PATH="${LOG_PATH:-$REPO_ROOT/epdtest/logs/lmms}"
-EVAL_OUTPUT_ROOT="${EVAL_OUTPUT_ROOT:-$LOG_PATH}"
-RUN_STAMP="${RUN_STAMP:-$(date +"%Y%m%d_%H%M%S")}" 
-RUN_ROOT="$LOG_PATH/$RUN_STAMP"
-EVAL_ROOT="$EVAL_OUTPUT_ROOT/$RUN_STAMP"
-TABLE_SUMMARY_LOG="$EVAL_ROOT/lmms_tables_summary.md"
 
-# Cases: case_name|topology|gpu_e|gpu_p|gpu_d
-CASES=(
-  # "1e1p1d_e0_p1_d2|1e1p1d|0|1|2"
-  # "1e1pNd_e0_p1_d0-2|1e1pNd|0|1|0,2"
-  # "1e1pNd_d_preempt_e0_p1_d0-2|1e1pNd_d_preempt|0|1|0,2"
-  # "Ne1p1d_e0-1_p1_d2|Ne1p1d|0,1|1|2"
-  # "Ne1p1d_e0-2_p1_d2|Ne1p1d|0,2|1|2"
-  "Ne1p1d_e0-1-2_p1_d2|Ne1p1d|0,1,2|1|2"
-  # "Ne1p1d_pd_preempt_e0-1-2_p1_d2|Ne1p1d_pd_preempt|0,1,2|1|2"
-  # "Ne1pNd_e0-1_p1_d0-2|Ne1pNd|0,1|1|0,2"
-  # "Ne1pNd_pd_preempt_e0-1_p1_d0-2|Ne1pNd_pd_preempt|0,1|1|0,2"
-)
 
 infer_prune_arch_expect_re() {
   local model_lc="${MODEL,,}"
