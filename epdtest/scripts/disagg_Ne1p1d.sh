@@ -523,7 +523,7 @@ vllm serve "$MODEL" \
     --allowed-local-media-path "${GIT_ROOT}"/tests/v1/ec_connector/integration \
     --ec-transfer-config '{
         "ec_connector": "ECExampleConnector",
-        "ec_role": "ec_producer",
+        "ec_role": "ec_both",
         "ec_connector_extra_config": {
             "shared_storage_path": "'"$EC_SHARED_STORAGE_PATH"'"
         }
