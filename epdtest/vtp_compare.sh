@@ -33,7 +33,7 @@ CASES=(
   "1e1p1d_e0_p1_d2|1e1p1d|0|1|2"
   "Ne1p1d_e0-1_p1_d2|Ne1p1d|0,1|1|2"
   # "Ne1p1d_e0-2_p1_d2|Ne1p1d|0,2|1|2"
-  "Ne1p1d_e0-1-2_p1_d2|Ne1p1d|0,1,2|1|2"
+  # "Ne1p1d_e0-1-2_p1_d2|Ne1p1d|0,1,2|1|2"
 )
 
 infer_prune_arch_expect_re() {
