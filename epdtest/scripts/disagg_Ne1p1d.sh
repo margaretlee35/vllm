@@ -46,6 +46,9 @@ ENABLE_DECODE_GPU_ENCODING="${ENABLE_DECODE_GPU_ENCODING:-1}"
 ENCODE_ROUTING_MEMORY_BUFFER="${ENCODE_ROUTING_MEMORY_BUFFER:-0.03}"
 ENCODE_ROUTING_WEIGHT_SCALE="${ENCODE_ROUTING_WEIGHT_SCALE:-100}"
 ENCODER_ONLY_SERVER_WEIGHT="${ENCODER_ONLY_SERVER_WEIGHT:-100}"
+PROXY_IDLE_AWARE_ENCODE_ROUTING="${PROXY_IDLE_AWARE_ENCODE_ROUTING:-1}"
+PROXY_IDLE_ENCODE_MAX_INFLIGHT_PER_SERVER="${PROXY_IDLE_ENCODE_MAX_INFLIGHT_PER_SERVER:-8}"
+PROXY_ENCODE_REQUEST_PRIORITY="${PROXY_ENCODE_REQUEST_PRIORITY:-100}"
 VISUAL_TOKEN_PRUNING_METHOD="${VISUAL_TOKEN_PRUNING_METHOD:-}"
 IMAGES_PER_REQ="${IMAGES_PER_REQ:-1}"
 HF_DATASET_PATH="${HF_DATASET_PATH:-lmarena-ai/VisionArena-Chat}"
@@ -194,6 +197,7 @@ ulimit -n "${ULIMIT_NOFILE:-65535}" >/dev/null 2>&1 || true
 GIT_ROOT=$(git rev-parse --show-toplevel)
 PRUNE_CONFIG_FILE="${PRUNE_CONFIG_FILE:-$GIT_ROOT/epdtest/visual_token_pruning_configs.json}"
 PRUNE_CONFIG_PARSER="${PRUNE_CONFIG_PARSER:-$GIT_ROOT/epdtest/parse_config.py}"
+NE1P1D_PROXY_SCRIPT="${NE1P1D_PROXY_SCRIPT:-$GIT_ROOT/epdtest/scripts/disagg_Ne1p1d_proxy.py}"
 
 ensure_pruning_config_files() {
     if [[ ! -f "$PRUNE_CONFIG_FILE" ]]; then
@@ -396,8 +400,23 @@ assert_fraction "ENCODER_GPU_MEMORY_UTILIZATION" "$ENCODER_GPU_MEMORY_UTILIZATIO
 assert_fraction "ENCODE_ROUTING_MEMORY_BUFFER" "$ENCODE_ROUTING_MEMORY_BUFFER"
 assert_non_negative_integer "ENCODE_ROUTING_WEIGHT_SCALE" "$ENCODE_ROUTING_WEIGHT_SCALE"
 assert_non_negative_integer "ENCODER_ONLY_SERVER_WEIGHT" "$ENCODER_ONLY_SERVER_WEIGHT"
+assert_non_negative_integer "PROXY_IDLE_ENCODE_MAX_INFLIGHT_PER_SERVER" "$PROXY_IDLE_ENCODE_MAX_INFLIGHT_PER_SERVER"
+if (( PROXY_IDLE_ENCODE_MAX_INFLIGHT_PER_SERVER < 1 )); then
+    die "PROXY_IDLE_ENCODE_MAX_INFLIGHT_PER_SERVER must be >= 1, got: $PROXY_IDLE_ENCODE_MAX_INFLIGHT_PER_SERVER"
+fi
 if ! is_integer "$PREFILL_DECODE_REQUEST_PRIORITY"; then
     die "PREFILL_DECODE_REQUEST_PRIORITY must be an integer, got: $PREFILL_DECODE_REQUEST_PRIORITY"
+fi
+if ! is_integer "$PROXY_ENCODE_REQUEST_PRIORITY"; then
+    die "PROXY_ENCODE_REQUEST_PRIORITY must be an integer, got: $PROXY_ENCODE_REQUEST_PRIORITY"
+fi
+if [[ "${PREFILL_DECODE_SCHEDULING_POLICY,,}" != "priority" ]]; then
+    if (( PREFILL_DECODE_REQUEST_PRIORITY != 0 || PROXY_ENCODE_REQUEST_PRIORITY != 0 )); then
+        die "Non-zero request priorities require PREFILL_DECODE_SCHEDULING_POLICY=priority"
+    fi
+fi
+if [[ ! -f "$NE1P1D_PROXY_SCRIPT" ]]; then
+    die "Missing Ne1p1d proxy script: $NE1P1D_PROXY_SCRIPT"
 fi
 
 trap cleanup EXIT
@@ -464,6 +483,7 @@ if [[ "${#ENCODER_ONLY_GPUS_ARRAY[@]}" -gt 0 ]]; then
         --gpu-memory-utilization "$ENCODER_GPU_MEMORY_UTILIZATION" \
         --port "$ENCODE_PORT" \
         "${VLLM_EAGER_ARGS[@]}" \
+        --scheduling-policy "$PREFILL_DECODE_SCHEDULING_POLICY" \
         --enable-request-id-headers \
         --no-enable-prefix-caching \
         --max-num-batched-tokens 114688 \
@@ -542,10 +562,6 @@ fi
 wait_for_server "$PREFILL_PORT"
 wait_for_server "$DECODE_PORT"
 
-if [[ "$ENCODER_SERVER_ENABLED" -eq 1 && "$ENCODER_ONLY_SERVER_WEIGHT" -gt 0 ]]; then
-    append_url_by_weight ENCODE_SERVER_URLS "http://localhost:$ENCODE_PORT" "$ENCODER_ONLY_SERVER_WEIGHT"
-fi
-
 if is_truthy "$ENABLE_PREFILL_GPU_ENCODING"; then
     PREFILL_ENCODE_HEADROOM=$(compute_encode_headroom "$PREFILL_GPU_MEMORY_UTILIZATION" "$ENCODE_ROUTING_MEMORY_BUFFER")
     PREFILL_ENCODE_WEIGHT=$(compute_routing_weight "$PREFILL_ENCODE_HEADROOM" "$ENCODE_ROUTING_WEIGHT_SCALE")
@@ -562,6 +578,10 @@ if is_truthy "$ENABLE_DECODE_GPU_ENCODING"; then
     fi
 fi
 
+if [[ "$ENCODER_SERVER_ENABLED" -eq 1 && "$ENCODER_ONLY_SERVER_WEIGHT" -gt 0 ]]; then
+    append_url_by_weight ENCODE_SERVER_URLS "http://localhost:$ENCODE_PORT" "$ENCODER_ONLY_SERVER_WEIGHT"
+fi
+
 if [[ "${#ENCODE_SERVER_URLS[@]}" -eq 0 ]]; then
     die "No encode servers are routable. Lower PREFILL/DECODE_GPU_MEMORY_UTILIZATION, lower ENCODE_ROUTING_MEMORY_BUFFER, or add encoder-only GPUs in GPU_E."
 fi
@@ -570,12 +590,21 @@ ENCODE_SERVERS_URLS_ARG="$(join_by_comma ENCODE_SERVER_URLS)"
 echo "Encode routing URLs: $ENCODE_SERVERS_URLS_ARG"
 echo "Encode routing weights -> prefill:$PREFILL_ENCODE_WEIGHT decode:$DECODE_ENCODE_WEIGHT encoder_only:$ENCODER_ONLY_SERVER_WEIGHT(enabled=$ENCODER_SERVER_ENABLED)"
 
-python "${GIT_ROOT}/examples/online_serving/disaggregated_encoder/disagg_epd_proxy.py" \
+declare -a PROXY_IDLE_ROUTING_ARGS=(
+    --idle-encode-max-inflight-per-server "$PROXY_IDLE_ENCODE_MAX_INFLIGHT_PER_SERVER"
+    --encode-request-priority "$PROXY_ENCODE_REQUEST_PRIORITY"
+)
+if is_truthy "$PROXY_IDLE_AWARE_ENCODE_ROUTING"; then
+    PROXY_IDLE_ROUTING_ARGS+=(--prefer-idle-prefill-decode-for-encode)
+fi
+
+python "$NE1P1D_PROXY_SCRIPT" \
     --host "0.0.0.0" \
     --port "$PROXY_PORT" \
     --encode-servers-urls "$ENCODE_SERVERS_URLS_ARG" \
     --prefill-servers-urls "http://localhost:$PREFILL_PORT" \
     --decode-servers-urls "http://localhost:$DECODE_PORT" \
+    "${PROXY_IDLE_ROUTING_ARGS[@]}" \
     >"${PROXY_LOG}" 2>&1 &
 PIDS+=($!)
 
