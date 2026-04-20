@@ -2,18 +2,12 @@
 set -euo pipefail
 
 # Shared Ne1p1d runner for both BENCHMARK=simple and BENCHMARK=randommm.
-# This topology runs N encoders (GPU_E list), 1 prefill (GPU_P), and 1 decode (GPU_D).
 
 # -----------------------------------------------------------------------------
 # Configuration defaults
 # -----------------------------------------------------------------------------
 
 declare -a PIDS=()
-declare -a ENCODE_GPUS=()
-declare -a ENCODE_PORT_LIST=()
-declare -a ENCODE_LOGS=()
-declare -a CRITICAL_PIDS=()
-declare -a CRITICAL_NAMES=()
 
 MODEL="${MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}"
 LOG_PATH="${LOG_PATH:-./epdtest/logs}"
@@ -21,14 +15,13 @@ mkdir -p "$LOG_PATH"
 BENCHMARK="${BENCHMARK:-randommm}"
 
 ENCODE_PORT="${ENCODE_PORT:-19534}"
-ENCODE_PORTS="${ENCODE_PORTS:-}"
 PREFILL_PORT="${PREFILL_PORT:-19535}"
 DECODE_PORT="${DECODE_PORT:-19536}"
 PROXY_PORT="${PROXY_PORT:-10001}"
 
-GPU_E="${GPU_E:-0}"
-GPU_P="${GPU_P:-1}"
-GPU_D="${GPU_D:-2}"
+GPU_E="${GPU_E:-0,1}"
+GPU_P="${GPU_P:-0}"
+GPU_D="${GPU_D:-1}"
 
 EC_SHARED_STORAGE_PATH="${EC_SHARED_STORAGE_PATH:-/tmp/ec_cache}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-12000}"
@@ -46,11 +39,17 @@ DECODE_NIXL_SIDE_CHANNEL_PORT="${DECODE_NIXL_SIDE_CHANNEL_PORT:-$((NIXL_BASE_POR
 PREFILL_GPU_MEMORY_UTILIZATION="${PREFILL_GPU_MEMORY_UTILIZATION:-0.85}"
 DECODE_GPU_MEMORY_UTILIZATION="${DECODE_GPU_MEMORY_UTILIZATION:-0.85}"
 ENCODER_GPU_MEMORY_UTILIZATION="${ENCODER_GPU_MEMORY_UTILIZATION:-0.05}"
+PREFILL_DECODE_SCHEDULING_POLICY="${PREFILL_DECODE_SCHEDULING_POLICY:-priority}"
+PREFILL_DECODE_REQUEST_PRIORITY="${PREFILL_DECODE_REQUEST_PRIORITY:--100}"
+ENABLE_PREFILL_GPU_ENCODING="${ENABLE_PREFILL_GPU_ENCODING:-1}"
+ENABLE_DECODE_GPU_ENCODING="${ENABLE_DECODE_GPU_ENCODING:-1}"
+ENCODE_ROUTING_MEMORY_BUFFER="${ENCODE_ROUTING_MEMORY_BUFFER:-0.03}"
+ENCODE_ROUTING_WEIGHT_SCALE="${ENCODE_ROUTING_WEIGHT_SCALE:-100}"
+ENCODER_ONLY_SERVER_WEIGHT="${ENCODER_ONLY_SERVER_WEIGHT:-100}"
 VISUAL_TOKEN_PRUNING_METHOD="${VISUAL_TOKEN_PRUNING_METHOD:-}"
 IMAGES_PER_REQ="${IMAGES_PER_REQ:-1}"
 HF_DATASET_PATH="${HF_DATASET_PATH:-lmarena-ai/VisionArena-Chat}"
 METRICS_SAMPLING_INTERVAL_SECONDS="${METRICS_SAMPLING_INTERVAL_SECONDS:-1}"
-FAIL_FAST_POLL_SECONDS="${FAIL_FAST_POLL_SECONDS:-1}"
 ENFORCE_EAGER="${ENFORCE_EAGER:-0}"
 declare -a VLLM_EAGER_ARGS=()
 case "${ENFORCE_EAGER,,}" in
@@ -59,12 +58,122 @@ case "${ENFORCE_EAGER,,}" in
         ;;
 esac
 
-ENCODE_URLS_CSV=""
-MONITOR_GPU_CSV=""
-
 die() {
     echo "$*" >&2
     exit 1
+}
+
+is_truthy() {
+    case "${1,,}" in
+        1|true|yes|on)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+is_non_negative_number() {
+    [[ "${1:-}" =~ ^([0-9]+([.][0-9]+)?|[.][0-9]+)$ ]]
+}
+
+is_integer() {
+    [[ "${1:-}" =~ ^-?[0-9]+$ ]]
+}
+
+assert_non_negative_number() {
+    local key=$1
+    local value=$2
+    if ! is_non_negative_number "$value"; then
+        die "$key must be a non-negative number, got: $value"
+    fi
+}
+
+assert_fraction() {
+    local key=$1
+    local value=$2
+    assert_non_negative_number "$key" "$value"
+    awk -v v="$value" 'BEGIN { exit !(v <= 1.0) }' || die "$key must be <= 1.0, got: $value"
+}
+
+assert_non_negative_integer() {
+    local key=$1
+    local value=$2
+    if ! is_integer "$value"; then
+        die "$key must be an integer, got: $value"
+    fi
+    (( value >= 0 )) || die "$key must be >= 0, got: $value"
+}
+
+split_csv_to_array() {
+    local csv="${1:-}"
+    local -n out_arr=$2
+    local -a raw_items=()
+    local item
+    out_arr=()
+    IFS=',' read -r -a raw_items <<< "$csv"
+    for item in "${raw_items[@]}"; do
+        item="${item//[[:space:]]/}"
+        [[ -n "$item" ]] && out_arr+=("$item")
+    done
+}
+
+join_by_comma() {
+    local -n arr=$1
+    local IFS=,
+    echo "${arr[*]}"
+}
+
+array_contains() {
+    local needle=$1
+    shift || true
+    local item
+    for item in "$@"; do
+        if [[ "$item" == "$needle" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+append_unique() {
+    local -n arr=$1
+    local value=$2
+    if ! array_contains "$value" "${arr[@]}"; then
+        arr+=("$value")
+    fi
+}
+
+append_url_by_weight() {
+    local -n out_arr=$1
+    local url=$2
+    local weight=$3
+    local i
+    for ((i = 0; i < weight; i++)); do
+        out_arr+=("$url")
+    done
+}
+
+compute_encode_headroom() {
+    local gpu_util=$1
+    local memory_buffer=$2
+    awk -v util="$gpu_util" -v buffer="$memory_buffer" 'BEGIN {
+        h = 1.0 - util - buffer;
+        if (h < 0.0) h = 0.0;
+        printf "%.6f", h;
+    }'
+}
+
+compute_routing_weight() {
+    local headroom=$1
+    local scale=$2
+    awk -v h="$headroom" -v s="$scale" 'BEGIN {
+        w = int(h * s);
+        if (h > 0.0 && w < 1) w = 1;
+        if (w < 0) w = 0;
+        print w;
+    }'
 }
 
 validate_benchmark() {
@@ -75,101 +184,6 @@ validate_benchmark() {
             die "Unsupported BENCHMARK: $BENCHMARK (expected simple or randommm)"
             ;;
     esac
-}
-
-trim_spaces() {
-    local value="$1"
-    # shellcheck disable=SC2001
-    echo "$(echo "$value" | sed 's/^ *//; s/ *$//')"
-}
-
-contains_value() {
-    local needle="$1"
-    shift
-    local item
-    for item in "$@"; do
-        if [[ "$item" == "$needle" ]]; then
-            return 0
-        fi
-    done
-    return 1
-}
-
-build_encoder_layout() {
-    ENCODE_GPUS=()
-    ENCODE_PORT_LIST=()
-
-    local -a raw_gpus=()
-    local item
-    IFS=',' read -ra raw_gpus <<< "$GPU_E"
-
-    for item in "${raw_gpus[@]}"; do
-        item="$(trim_spaces "$item")"
-        if [[ -n "$item" ]]; then
-            ENCODE_GPUS+=("$item")
-        fi
-    done
-
-    if [[ ${#ENCODE_GPUS[@]} -eq 0 ]]; then
-        die "GPU_E must contain at least one GPU id (example: GPU_E=0 or GPU_E=0,2)"
-    fi
-
-    local idx
-    if [[ -n "$ENCODE_PORTS" ]]; then
-        local -a raw_ports=()
-        local port
-        IFS=',' read -ra raw_ports <<< "$ENCODE_PORTS"
-        for port in "${raw_ports[@]}"; do
-            port="$(trim_spaces "$port")"
-            if [[ -n "$port" ]]; then
-                ENCODE_PORT_LIST+=("$port")
-            fi
-        done
-
-        if [[ ${#ENCODE_PORT_LIST[@]} -ne ${#ENCODE_GPUS[@]} ]]; then
-            die "ENCODE_PORTS count (${#ENCODE_PORT_LIST[@]}) must match GPU_E count (${#ENCODE_GPUS[@]})"
-        fi
-    else
-        local candidate_port="$ENCODE_PORT"
-        local -a reserved_ports=("$PREFILL_PORT" "$DECODE_PORT" "$PROXY_PORT")
-
-        for idx in "${!ENCODE_GPUS[@]}"; do
-            while contains_value "$candidate_port" "${reserved_ports[@]}" || \
-                  contains_value "$candidate_port" "${ENCODE_PORT_LIST[@]}"; do
-                candidate_port=$((candidate_port + 1))
-            done
-            ENCODE_PORT_LIST+=("$candidate_port")
-            candidate_port=$((candidate_port + 1))
-        done
-    fi
-
-    local port
-    for port in "${ENCODE_PORT_LIST[@]}"; do
-        if contains_value "$port" "$PREFILL_PORT" "$DECODE_PORT" "$PROXY_PORT"; then
-            die "Encoder port collision detected: ${port}. Choose non-overlapping ENCODE_PORT/ENCODE_PORTS."
-        fi
-    done
-
-    ENCODE_LOGS=()
-    for idx in "${!ENCODE_GPUS[@]}"; do
-        ENCODE_LOGS+=("$RUN_DIR/encoder_${idx}.log")
-    done
-
-    local -a encode_urls=()
-    for port in "${ENCODE_PORT_LIST[@]}"; do
-        encode_urls+=("http://localhost:$port")
-    done
-    ENCODE_URLS_CSV=$(IFS=','; echo "${encode_urls[*]}")
-
-    local -a monitor_gpus=("${ENCODE_GPUS[@]}" "$GPU_P" "$GPU_D")
-    local -a unique_gpus=()
-    local gpu
-    for gpu in "${monitor_gpus[@]}"; do
-        if ! contains_value "$gpu" "${unique_gpus[@]}"; then
-            unique_gpus+=("$gpu")
-        fi
-    done
-    MONITOR_GPU_CSV=$(IFS=','; echo "${unique_gpus[*]}")
 }
 
 export UCX_TLS=all
@@ -282,9 +296,26 @@ build_visual_token_pruning_args() {
 START_TIME=$(date +"%Y%m%d_%H%M%S")
 RUN_DIR="${RUN_DIR:-$LOG_PATH/$START_TIME}"
 mkdir -p "$RUN_DIR"
+ENC_LOG="$RUN_DIR/encoder.log"
 P_LOG="$RUN_DIR/prefill.log"
 D_LOG="$RUN_DIR/decode.log"
 PROXY_LOG="$RUN_DIR/proxy.log"
+ENCODER_SERVER_ENABLED=0
+PREFILL_ENCODE_HEADROOM=0
+DECODE_ENCODE_HEADROOM=0
+PREFILL_ENCODE_WEIGHT=0
+DECODE_ENCODE_WEIGHT=0
+ENCODE_SERVERS_URLS_ARG=""
+MONITORED_GPU_IDS_CSV=""
+PREFILL_GPU_CUDA_VISIBLE_DEVICES="$GPU_P"
+DECODE_GPU_CUDA_VISIBLE_DEVICES="$GPU_D"
+ENCODER_ONLY_GPU_CUDA_VISIBLE_DEVICES=""
+declare -a ENCODER_GPUS_ARRAY=()
+declare -a PREFILL_GPUS_ARRAY=()
+declare -a DECODE_GPUS_ARRAY=()
+declare -a ENCODER_ONLY_GPUS_ARRAY=()
+declare -a MONITORED_GPUS_ARRAY=()
+declare -a ENCODE_SERVER_URLS=()
 
 wait_for_server() {
     local port=$1
@@ -299,49 +330,19 @@ port_in_use() {
     ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]${port}$"
 }
 
-ensure_required_ports_free() {
-    local -a required_ports=("${ENCODE_PORT_LIST[@]}" "$PREFILL_PORT" "$DECODE_PORT" "$PROXY_PORT")
-    local port
-    for port in "${required_ports[@]}"; do
-        if port_in_use "$port"; then
-            die "Port ${port} is already in use. Stop stale processes or change ports."
-        fi
-    done
-}
-
-register_critical_pid() {
-    local name="$1"
-    local pid="$2"
-    CRITICAL_NAMES+=("$name")
-    CRITICAL_PIDS+=("$pid")
-}
-
-monitor_critical_processes() {
-    while true; do
-        local idx
-        for idx in "${!CRITICAL_PIDS[@]}"; do
-            local pid="${CRITICAL_PIDS[$idx]}"
-            local name="${CRITICAL_NAMES[$idx]}"
-            if ! kill -0 "$pid" 2>/dev/null; then
-                echo "Critical process exited unexpectedly: ${name} (pid=${pid})" >&2
-                kill -USR1 "$$" 2>/dev/null || true
-                exit 0
-            fi
-        done
-        sleep "$FAIL_FAST_POLL_SECONDS"
-    done
-}
-
 log_gpu_sm_utilization() {
     local ts=$1
     local output
     if ! command -v nvidia-smi >/dev/null 2>&1; then
         return 0
     fi
+    if [[ -z "$MONITORED_GPU_IDS_CSV" ]]; then
+        return 0
+    fi
     output=$(nvidia-smi \
         --query-gpu=index,utilization.gpu,utilization.memory,memory.used,power.draw \
         --format=csv,noheader,nounits \
-        -i "$MONITOR_GPU_CSV" 2>/dev/null || true)
+        -i "$MONITORED_GPU_IDS_CSV" 2>/dev/null || true)
     if [[ -z "$output" ]]; then
         return 0
     fi
@@ -353,13 +354,13 @@ log_gpu_sm_utilization() {
         power_draw=$(echo "$power_draw" | xargs)
 
         local -a roles=()
-        if contains_value "$gpu_index" "${ENCODE_GPUS[@]}"; then
+        if array_contains "$gpu_index" "${ENCODER_GPUS_ARRAY[@]}"; then
             roles+=("encoder")
         fi
-        if [[ "$gpu_index" == "$GPU_P" ]]; then
+        if array_contains "$gpu_index" "${PREFILL_GPUS_ARRAY[@]}"; then
             roles+=("prefill")
         fi
-        if [[ "$gpu_index" == "$GPU_D" ]]; then
+        if array_contains "$gpu_index" "${DECODE_GPUS_ARRAY[@]}"; then
             roles+=("decode")
         fi
         local role
@@ -389,7 +390,15 @@ cleanup() {
 
 validate_benchmark
 ensure_pruning_config_files
-build_encoder_layout
+assert_fraction "PREFILL_GPU_MEMORY_UTILIZATION" "$PREFILL_GPU_MEMORY_UTILIZATION"
+assert_fraction "DECODE_GPU_MEMORY_UTILIZATION" "$DECODE_GPU_MEMORY_UTILIZATION"
+assert_fraction "ENCODER_GPU_MEMORY_UTILIZATION" "$ENCODER_GPU_MEMORY_UTILIZATION"
+assert_fraction "ENCODE_ROUTING_MEMORY_BUFFER" "$ENCODE_ROUTING_MEMORY_BUFFER"
+assert_non_negative_integer "ENCODE_ROUTING_WEIGHT_SCALE" "$ENCODE_ROUTING_WEIGHT_SCALE"
+assert_non_negative_integer "ENCODER_ONLY_SERVER_WEIGHT" "$ENCODER_ONLY_SERVER_WEIGHT"
+if ! is_integer "$PREFILL_DECODE_REQUEST_PRIORITY"; then
+    die "PREFILL_DECODE_REQUEST_PRIORITY must be an integer, got: $PREFILL_DECODE_REQUEST_PRIORITY"
+fi
 
 trap cleanup EXIT
 trap cleanup INT
@@ -404,22 +413,56 @@ if ! apply_visual_token_pruning_config "${VISUAL_TOKEN_PRUNING_METHOD:-}"; then
 fi
 
 build_visual_token_pruning_args
-ensure_required_ports_free
+
+split_csv_to_array "$GPU_E" ENCODER_GPUS_ARRAY
+split_csv_to_array "$GPU_P" PREFILL_GPUS_ARRAY
+split_csv_to_array "$GPU_D" DECODE_GPUS_ARRAY
+
+if [[ "${#ENCODER_GPUS_ARRAY[@]}" -eq 0 ]]; then
+    die "GPU_E must include at least one GPU id"
+fi
+if [[ "${#PREFILL_GPUS_ARRAY[@]}" -eq 0 ]]; then
+    die "GPU_P must include at least one GPU id"
+fi
+if [[ "${#DECODE_GPUS_ARRAY[@]}" -eq 0 ]]; then
+    die "GPU_D must include at least one GPU id"
+fi
+
+for gpu in "${ENCODER_GPUS_ARRAY[@]}"; do
+    if array_contains "$gpu" "${PREFILL_GPUS_ARRAY[@]}"; then
+        continue
+    fi
+    if array_contains "$gpu" "${DECODE_GPUS_ARRAY[@]}"; then
+        continue
+    fi
+    append_unique ENCODER_ONLY_GPUS_ARRAY "$gpu"
+done
+
+PREFILL_GPU_CUDA_VISIBLE_DEVICES="$(join_by_comma PREFILL_GPUS_ARRAY)"
+DECODE_GPU_CUDA_VISIBLE_DEVICES="$(join_by_comma DECODE_GPUS_ARRAY)"
+ENCODER_ONLY_GPU_CUDA_VISIBLE_DEVICES="$(join_by_comma ENCODER_ONLY_GPUS_ARRAY)"
+
+for gpu in "${ENCODER_GPUS_ARRAY[@]}"; do
+    append_unique MONITORED_GPUS_ARRAY "$gpu"
+done
+for gpu in "${PREFILL_GPUS_ARRAY[@]}"; do
+    append_unique MONITORED_GPUS_ARRAY "$gpu"
+done
+for gpu in "${DECODE_GPUS_ARRAY[@]}"; do
+    append_unique MONITORED_GPUS_ARRAY "$gpu"
+done
+MONITORED_GPU_IDS_CSV="$(join_by_comma MONITORED_GPUS_ARRAY)"
 
 while port_in_use "$PREFILL_NIXL_SIDE_CHANNEL_PORT" || port_in_use "$DECODE_NIXL_SIDE_CHANNEL_PORT"; do
     PREFILL_NIXL_SIDE_CHANNEL_PORT=$((PREFILL_NIXL_SIDE_CHANNEL_PORT + 1))
     DECODE_NIXL_SIDE_CHANNEL_PORT=$((DECODE_NIXL_SIDE_CHANNEL_PORT + 1))
 done
 
-for idx in "${!ENCODE_GPUS[@]}"; do
-    encode_gpu="${ENCODE_GPUS[$idx]}"
-    encode_port="${ENCODE_PORT_LIST[$idx]}"
-    encode_log="${ENCODE_LOGS[$idx]}"
-
-    CUDA_VISIBLE_DEVICES="$encode_gpu" vllm serve "$MODEL" \
+if [[ "${#ENCODER_ONLY_GPUS_ARRAY[@]}" -gt 0 ]]; then
+    CUDA_VISIBLE_DEVICES="$ENCODER_ONLY_GPU_CUDA_VISIBLE_DEVICES" vllm serve "$MODEL" \
         "${HF_OVERRIDES_ARGS[@]}" \
         --gpu-memory-utilization "$ENCODER_GPU_MEMORY_UTILIZATION" \
-        --port "$encode_port" \
+        --port "$ENCODE_PORT" \
         "${VLLM_EAGER_ARGS[@]}" \
         --enable-request-id-headers \
         --no-enable-prefix-caching \
@@ -434,17 +477,18 @@ for idx in "${!ENCODE_GPUS[@]}"; do
             }
         }' \
         "${VISUAL_TOKEN_PRUNING_ARGS[@]}" \
-        >"${encode_log}" 2>&1 &
+        >"${ENC_LOG}" 2>&1 &
     PIDS+=($!)
-    register_critical_pid "encoder_${idx}" "$!"
-done
+    ENCODER_SERVER_ENABLED=1
+fi
 
-CUDA_VISIBLE_DEVICES="$GPU_P" UCX_NET_DEVICES=all VLLM_NIXL_SIDE_CHANNEL_PORT="$PREFILL_NIXL_SIDE_CHANNEL_PORT" \
+CUDA_VISIBLE_DEVICES="$PREFILL_GPU_CUDA_VISIBLE_DEVICES" UCX_NET_DEVICES=all VLLM_NIXL_SIDE_CHANNEL_PORT="$PREFILL_NIXL_SIDE_CHANNEL_PORT" \
 vllm serve "$MODEL" \
     "${HF_OVERRIDES_ARGS[@]}" \
     --gpu-memory-utilization "$PREFILL_GPU_MEMORY_UTILIZATION" \
     --port "$PREFILL_PORT" \
     "${VLLM_EAGER_ARGS[@]}" \
+    --scheduling-policy "$PREFILL_DECODE_SCHEDULING_POLICY" \
     --enable-request-id-headers \
     --max-model-len "$PD_MAX_MODEL_LEN" \
     --max-num-batched-tokens "$PD_MAX_NUM_BATCHED_TOKENS" \
@@ -452,7 +496,7 @@ vllm serve "$MODEL" \
     --allowed-local-media-path "${GIT_ROOT}"/tests/v1/ec_connector/integration \
     --ec-transfer-config '{
         "ec_connector": "ECExampleConnector",
-        "ec_role": "ec_consumer",
+        "ec_role": "ec_both",
         "ec_connector_extra_config": {
             "shared_storage_path": "'"$EC_SHARED_STORAGE_PATH"'"
         }
@@ -464,19 +508,26 @@ vllm serve "$MODEL" \
     "${VISUAL_TOKEN_PRUNING_ARGS[@]}" \
     >"${P_LOG}" 2>&1 &
 PIDS+=($!)
-register_critical_pid "prefill" "$!"
 
-CUDA_VISIBLE_DEVICES="$GPU_D" UCX_NET_DEVICES=all VLLM_NIXL_SIDE_CHANNEL_PORT="$DECODE_NIXL_SIDE_CHANNEL_PORT" \
+CUDA_VISIBLE_DEVICES="$DECODE_GPU_CUDA_VISIBLE_DEVICES" UCX_NET_DEVICES=all VLLM_NIXL_SIDE_CHANNEL_PORT="$DECODE_NIXL_SIDE_CHANNEL_PORT" \
 vllm serve "$MODEL" \
     "${HF_OVERRIDES_ARGS[@]}" \
     --gpu-memory-utilization "$DECODE_GPU_MEMORY_UTILIZATION" \
     --port "$DECODE_PORT" \
     "${VLLM_EAGER_ARGS[@]}" \
+    --scheduling-policy "$PREFILL_DECODE_SCHEDULING_POLICY" \
     --enable-request-id-headers \
     --max-model-len "$PD_MAX_MODEL_LEN" \
     --max-num-batched-tokens "$PD_MAX_NUM_BATCHED_TOKENS" \
     --max-num-seqs "$PD_MAX_NUM_SEQS" \
     --allowed-local-media-path "${GIT_ROOT}"/tests/v1/ec_connector/integration \
+    --ec-transfer-config '{
+        "ec_connector": "ECExampleConnector",
+        "ec_role": "ec_producer",
+        "ec_connector_extra_config": {
+            "shared_storage_path": "'"$EC_SHARED_STORAGE_PATH"'"
+        }
+    }' \
     --kv-transfer-config '{
         "kv_connector": "NixlConnector",
         "kv_role": "kv_consumer"
@@ -484,28 +535,51 @@ vllm serve "$MODEL" \
     "${VISUAL_TOKEN_PRUNING_ARGS[@]}" \
     >"${D_LOG}" 2>&1 &
 PIDS+=($!)
-register_critical_pid "decode" "$!"
 
-for encode_port in "${ENCODE_PORT_LIST[@]}"; do
-    wait_for_server "$encode_port"
-done
+if [[ "$ENCODER_SERVER_ENABLED" -eq 1 ]]; then
+    wait_for_server "$ENCODE_PORT"
+fi
 wait_for_server "$PREFILL_PORT"
 wait_for_server "$DECODE_PORT"
+
+if [[ "$ENCODER_SERVER_ENABLED" -eq 1 && "$ENCODER_ONLY_SERVER_WEIGHT" -gt 0 ]]; then
+    append_url_by_weight ENCODE_SERVER_URLS "http://localhost:$ENCODE_PORT" "$ENCODER_ONLY_SERVER_WEIGHT"
+fi
+
+if is_truthy "$ENABLE_PREFILL_GPU_ENCODING"; then
+    PREFILL_ENCODE_HEADROOM=$(compute_encode_headroom "$PREFILL_GPU_MEMORY_UTILIZATION" "$ENCODE_ROUTING_MEMORY_BUFFER")
+    PREFILL_ENCODE_WEIGHT=$(compute_routing_weight "$PREFILL_ENCODE_HEADROOM" "$ENCODE_ROUTING_WEIGHT_SCALE")
+    if (( PREFILL_ENCODE_WEIGHT > 0 )); then
+        append_url_by_weight ENCODE_SERVER_URLS "http://localhost:$PREFILL_PORT" "$PREFILL_ENCODE_WEIGHT"
+    fi
+fi
+
+if is_truthy "$ENABLE_DECODE_GPU_ENCODING"; then
+    DECODE_ENCODE_HEADROOM=$(compute_encode_headroom "$DECODE_GPU_MEMORY_UTILIZATION" "$ENCODE_ROUTING_MEMORY_BUFFER")
+    DECODE_ENCODE_WEIGHT=$(compute_routing_weight "$DECODE_ENCODE_HEADROOM" "$ENCODE_ROUTING_WEIGHT_SCALE")
+    if (( DECODE_ENCODE_WEIGHT > 0 )); then
+        append_url_by_weight ENCODE_SERVER_URLS "http://localhost:$DECODE_PORT" "$DECODE_ENCODE_WEIGHT"
+    fi
+fi
+
+if [[ "${#ENCODE_SERVER_URLS[@]}" -eq 0 ]]; then
+    die "No encode servers are routable. Lower PREFILL/DECODE_GPU_MEMORY_UTILIZATION, lower ENCODE_ROUTING_MEMORY_BUFFER, or add encoder-only GPUs in GPU_E."
+fi
+
+ENCODE_SERVERS_URLS_ARG="$(join_by_comma ENCODE_SERVER_URLS)"
+echo "Encode routing URLs: $ENCODE_SERVERS_URLS_ARG"
+echo "Encode routing weights -> prefill:$PREFILL_ENCODE_WEIGHT decode:$DECODE_ENCODE_WEIGHT encoder_only:$ENCODER_ONLY_SERVER_WEIGHT(enabled=$ENCODER_SERVER_ENABLED)"
 
 python "${GIT_ROOT}/examples/online_serving/disaggregated_encoder/disagg_epd_proxy.py" \
     --host "0.0.0.0" \
     --port "$PROXY_PORT" \
-    --encode-servers-urls "$ENCODE_URLS_CSV" \
+    --encode-servers-urls "$ENCODE_SERVERS_URLS_ARG" \
     --prefill-servers-urls "http://localhost:$PREFILL_PORT" \
     --decode-servers-urls "http://localhost:$DECODE_PORT" \
     >"${PROXY_LOG}" 2>&1 &
 PIDS+=($!)
-register_critical_pid "proxy" "$!"
 
 wait_for_server "$PROXY_PORT"
-
-monitor_critical_processes &
-PIDS+=($!)
 
 SM_LOG="$RUN_DIR/sm.log"
 echo "timestamp,role,gpu_index,sm_utilization_pct,memory_utilization_pct,memory_used_mib,power_draw_watts" > "$SM_LOG"
@@ -530,9 +604,11 @@ declare -a BENCH_ARGS=(
     --port "$PROXY_PORT"
 )
 
+EXTRA_BODY_JSON="{\"priority\": ${PREFILL_DECODE_REQUEST_PRIORITY}}"
 if [[ "${BENCH_MIN_TOKENS:-0}" =~ ^[0-9]+$ ]] && (( BENCH_MIN_TOKENS > 0 )); then
-    BENCH_ARGS+=(--extra-body "{\"min_tokens\": ${BENCH_MIN_TOKENS}}")
+    EXTRA_BODY_JSON="{\"min_tokens\": ${BENCH_MIN_TOKENS}, \"priority\": ${PREFILL_DECODE_REQUEST_PRIORITY}}"
 fi
+BENCH_ARGS+=(--extra-body "$EXTRA_BODY_JSON")
 
 if [[ "$BENCHMARK" == "randommm" ]]; then
     BENCH_ARGS+=(
@@ -555,6 +631,7 @@ if [[ "$BENCHMARK" == "simple" ]]; then
         -H "Content-Type: application/json" \
         -d '{
         "model": "'"${MODEL}"'",
+        "priority": '"${PREFILL_DECODE_REQUEST_PRIORITY}"',
         "messages": [
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": [
