@@ -21,6 +21,7 @@ EC_SHARED_STORAGE_PATH="${EC_SHARED_STORAGE_PATH:-/tmp/ec_cache}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-12000}"   # wait_for_server timeout
 
 NUM_PROMPTS="${NUM_PROMPTS:-100}"    # number of prompts to send in benchmark
+BENCH_TEMPERATURE="${BENCH_TEMPERATURE:-0}"
 VISUAL_TOKEN_PRUNING_METHOD="${VISUAL_TOKEN_PRUNING_METHOD:-}"
 VISUAL_TOKEN_PRUNING_RATE="${VISUAL_TOKEN_PRUNING_RATE:-}"
 VISION_ZIP_DOMINANT_RATIO="${VISION_ZIP_DOMINANT_RATIO:-}"
@@ -201,6 +202,7 @@ vllm bench serve \
   --dataset-name        hf \
   --dataset-path        lmarena-ai/VisionArena-Chat \
   --seed                0 \
+  --temperature         "$BENCH_TEMPERATURE" \
   --num-prompts         "$NUM_PROMPTS" \
   --port                "$PROXY_PORT"
 

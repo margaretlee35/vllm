@@ -12,7 +12,8 @@ clusters:
 For MM input we:
     1. Extract *every* image/audio item.
     2. Fire N concurrent requests to the encoder cluster
-       (one request per item, with **all text removed**).
+       (one request per item, while preserving text context and keeping
+       only the target MM item in each sub-request).
     3. Wait for all of them to succeed.
     4. Forward the *original* request to a decode server.
 """
@@ -73,13 +74,63 @@ def extract_mm_items(request_data: dict) -> list[dict]:
     return items
 
 
+def build_encoder_messages_for_item(
+    request_data: dict,
+    target_mm_item: dict,
+) -> list[dict]:
+    """Build messages for a single encoder-primer sub-request.
+
+    Keeps all non-MM content intact and keeps exactly one MM item:
+    the target item for this sub-request.
+    """
+    output_messages: list[dict] = []
+    did_include_target = False
+
+    for message in request_data.get("messages", []):
+        if not isinstance(message, dict):
+            continue
+
+        content = message.get("content")
+        if not isinstance(content, list):
+            output_messages.append(dict(message))
+            continue
+
+        filtered_content: list[dict | str] = []
+        for content_item in content:
+            if not isinstance(content_item, dict):
+                filtered_content.append(content_item)
+                continue
+
+            item_type = content_item.get("type")
+            if item_type in MM_TYPES:
+                if not did_include_target and content_item is target_mm_item:
+                    filtered_content.append(content_item)
+                    did_include_target = True
+                continue
+
+            filtered_content.append(content_item)
+
+        if not filtered_content:
+            continue
+
+        out_message = dict(message)
+        out_message["content"] = filtered_content
+        output_messages.append(out_message)
+
+    # Fallback for unusual payloads where identity matching failed.
+    if not did_include_target:
+        output_messages.append({"role": "user", "content": [target_mm_item]})
+
+    return output_messages
+
+
 async def fanout_encoder_primer(
     orig_request: dict,
     e_urls: list[str],
     req_id: str,
 ) -> None:
     """
-    1. Build one request *per MM item* with all text removed.
+    1. Build one request *per MM item* while preserving text context.
     2. Send them concurrently to the encode cluster.
     3. Raise if any of them fails.
     """
@@ -103,11 +154,8 @@ async def fanout_encoder_primer(
         headers = {"x-request-id": child_req_id}
 
         encoder_req = {
-            # You *may* need to keep additional fields
             "model": orig_request.get("model"),
-            "messages": [
-                {"role": "user", "content": [item]},
-            ],
+            "messages": build_encoder_messages_for_item(orig_request, item),
             # Only need 1 token so the server actually runs the encoder path
             "max_tokens": 1,
             "stream": False,
