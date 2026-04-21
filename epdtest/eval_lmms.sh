@@ -71,9 +71,9 @@ PRUNE_CONFIG_PARSER="${PRUNE_CONFIG_PARSER:-$GIT_ROOT/epdtest/parse_config.py}"
 normalize_method() {
     local method="${1,,}"
     case "$method" in
-        none|visionzip|cdpruner) echo "$method" ;;
+        none|visionzip|cdpruner|vscan) echo "$method" ;;
         *)
-            echo "Unsupported METHOD '$1'. Use one of: none, visionzip, cdpruner." >&2
+            echo "Unsupported METHOD '$1'. Use one of: none, visionzip, cdpruner, vscan." >&2
             exit 2
             ;;
     esac
@@ -281,6 +281,12 @@ start_vllm_server() {
                 --vt-prune-rate "$RESOLVED_VISUAL_TOKEN_PRUNING_RATE"
             )
             ;;
+        vscan)
+            METHOD_ARGS+=(
+                --visual-token-pruning-method vscan
+                --vt-prune-rate "$RESOLVED_VISUAL_TOKEN_PRUNING_RATE"
+            )
+            ;;
         *)
             echo "Unsupported VISUAL_TOKEN_PRUNING_METHOD from config: $RESOLVED_VISUAL_TOKEN_PRUNING_METHOD" >&2
             exit 2
@@ -288,8 +294,14 @@ start_vllm_server() {
     esac
 
     if [[ "$RESOLVED_VISUAL_TOKEN_PRUNING_METHOD" != "none" ]]; then
+        local prune_arch
+        if [[ "$RESOLVED_VISUAL_TOKEN_PRUNING_METHOD" == "vscan" ]]; then
+            prune_arch="Qwen2_5_VLForConditionalGenerationVScan"
+        else
+            prune_arch="$PRUNE_WRAPPER_ARCH"
+        fi
         local prune_arch_json
-        prune_arch_json=$(printf '{"architectures":["%s"]}' "$PRUNE_WRAPPER_ARCH")
+        prune_arch_json=$(printf '{"architectures":["%s"]}' "$prune_arch")
         HF_OVERRIDES_ARGS+=(--hf-overrides "$prune_arch_json")
     fi
 
@@ -463,7 +475,7 @@ Usage:
   bash epdtest/eval_lmms.sh [method ...]
 
 Options (env):
-  METHODS="none visionzip cdpruner"
+  METHODS="none visionzip cdpruner vscan"
   PRUNE_CONFIG_FILE PATH
   PRUNE_CONFIG_PARSER PATH
   LMMS_TASKS TASK_LIST
@@ -479,7 +491,7 @@ Examples:
 
 Notes:
   - This runs LMMS-Eval sequentially per pruning method.
-  - Supported methods: none, visionzip, cdpruner.
+  - Supported methods: none, visionzip, cdpruner, vscan.
   - Pruning knobs are always loaded from PRUNE_CONFIG_FILE.
   - Per-method outputs are written under EVAL_OUTPUT_ROOT.
 EOF

@@ -137,18 +137,21 @@ build_visual_token_pruning_args() {
     declare -g -a VISUAL_TOKEN_PRUNING_ARGS=()
 
     case "${VISUAL_TOKEN_PRUNING_METHOD,,}" in
-        ""|none|visionzip|cdpruner)
+        ""|none|visionzip|cdpruner|vscan)
             if [[ "${VISUAL_TOKEN_PRUNING_METHOD,,}" != "none" && -n "${VISUAL_TOKEN_PRUNING_METHOD:-}" ]]; then
                 VISUAL_TOKEN_PRUNING_ARGS+=(--visual-token-pruning-method "${VISUAL_TOKEN_PRUNING_METHOD,,}")
             fi
             ;;
         *)
-            die "Unsupported VISUAL_TOKEN_PRUNING_METHOD: ${VISUAL_TOKEN_PRUNING_METHOD} (expected visionzip, cdpruner, or none)"
+            die "Unsupported VISUAL_TOKEN_PRUNING_METHOD: ${VISUAL_TOKEN_PRUNING_METHOD} (expected visionzip, cdpruner, vscan, or none)"
             ;;
     esac
 
     if [[ -n "${VISUAL_TOKEN_PRUNING_RATE:-}" ]]; then
         VISUAL_TOKEN_PRUNING_ARGS+=(--vt-prune-rate "$VISUAL_TOKEN_PRUNING_RATE")
+    fi
+    if [[ "${VISUAL_TOKEN_PRUNING_METHOD,,}" == "vscan" ]]; then
+        VISUAL_TOKEN_PRUNING_ARGS+=(--hf-overrides '{"architectures":["Qwen2_5_VLForConditionalGenerationVScan"]}')
     fi
     if [[ "${VISUAL_TOKEN_PRUNING_METHOD,,}" == "visionzip" ]]; then
         if [[ -n "${VISION_ZIP_DOMINANT_RATIO:-}" ]]; then

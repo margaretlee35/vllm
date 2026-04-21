@@ -60,7 +60,7 @@ class MultiModalDummyOptionsBuiltins(TypedDict, total=False):
 
 MMEncoderTPMode = Literal["weights", "data"]
 MMCacheType = Literal["shm", "lru"]
-VisualTokenPruningMethod = Literal["visionzip", "cdpruner"]
+VisualTokenPruningMethod = Literal["visionzip", "cdpruner", "vscan"]
 MMDummyOptions: TypeAlias = dict[str, BaseDummyOptions]
 """
 A dictionary containing an entry for each modality type of dummy data.
@@ -254,10 +254,12 @@ class MultiModalConfig:
             return "visionzip"
         if method in ("cdpruner", "cdprune"):
             return "cdpruner"
+        if method == "vscan":
+            return "vscan"
 
         raise ValueError(
             "visual_token_pruning_method must be one of: "
-            "'visionzip' or 'cdpruner'."
+            "'visionzip', 'cdpruner', or 'vscan'."
         )
 
     @staticmethod
@@ -323,6 +325,14 @@ class MultiModalConfig:
         ):
             raise ValueError(
                 "'visual_token_pruning_method=\"cdpruner\"' requires "
+                "'vt_prune_rate' to be set to a value greater than 0."
+            )
+        if (
+            self.visual_token_pruning_method == "vscan"
+            and not self.is_vscan_enabled()
+        ):
+            raise ValueError(
+                "'visual_token_pruning_method=\"vscan\"' requires "
                 "'vt_prune_rate' to be set to a value greater than 0."
             )
         return self
@@ -394,6 +404,13 @@ class MultiModalConfig:
             self.vt_prune_rate is not None
             and self.vt_prune_rate > 0
             and self.get_visual_token_pruning_method() == "cdpruner"
+        )
+
+    def is_vscan_enabled(self) -> bool:
+        return (
+            self.vt_prune_rate is not None
+            and self.vt_prune_rate > 0
+            and self.get_visual_token_pruning_method() == "vscan"
         )
 
     def get_visual_token_pruning_method(self) -> VisualTokenPruningMethod | None:

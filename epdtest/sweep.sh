@@ -6,6 +6,7 @@ usage() {
 Usage:
   bash epdtest/sweep.sh visionzip
   bash epdtest/sweep.sh cdpruner
+  bash epdtest/sweep.sh vscan
   bash epdtest/sweep.sh none
 EOF
 }
@@ -25,6 +26,10 @@ case "$PRUNE_MODE_INPUT" in
     cdpruner)
         PRUNE_MODE="cdpruner"
         export VISUAL_TOKEN_PRUNING_METHOD="cdpruner"
+        ;;
+    vscan)
+        PRUNE_MODE="vscan"
+        export VISUAL_TOKEN_PRUNING_METHOD="vscan"
         ;;
     none)
         PRUNE_MODE="none"
