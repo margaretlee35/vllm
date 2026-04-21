@@ -22,6 +22,8 @@ TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-12000}"   # wait_for_server timeout
 
 NUM_PROMPTS="${NUM_PROMPTS:-100}"    # number of prompts to send in benchmark
 BENCH_TEMPERATURE="${BENCH_TEMPERATURE:-0}"
+BENCH_REQUEST_RATE="${BENCH_REQUEST_RATE:-}"
+BENCH_MAX_CONCURRENCY="${BENCH_MAX_CONCURRENCY:-}"
 VISUAL_TOKEN_PRUNING_METHOD="${VISUAL_TOKEN_PRUNING_METHOD:-}"
 VISUAL_TOKEN_PRUNING_RATE="${VISUAL_TOKEN_PRUNING_RATE:-}"
 VISION_ZIP_DOMINANT_RATIO="${VISION_ZIP_DOMINANT_RATIO:-}"
@@ -38,6 +40,7 @@ ENC_LOG=$LOG_PATH/encoder_${START_TIME}.log
 PD_LOG=$LOG_PATH/pd_${START_TIME}.log
 PROXY_LOG=$LOG_PATH/proxy_${START_TIME}.log
 declare -a VISUAL_TOKEN_PRUNING_ARGS=()
+declare -a BENCH_EXTRA_ARGS=()
 
 build_visual_token_pruning_args() {
     case "${VISUAL_TOKEN_PRUNING_METHOD,,}" in
@@ -69,6 +72,15 @@ build_visual_token_pruning_args() {
                 --vision-zip-attention-layer "${VISION_ZIP_ATTENTION_LAYER}"
             )
         fi
+    fi
+}
+
+build_bench_args() {
+    if [[ -n "${BENCH_REQUEST_RATE}" ]]; then
+        BENCH_EXTRA_ARGS+=(--request-rate "${BENCH_REQUEST_RATE}")
+    fi
+    if [[ -n "${BENCH_MAX_CONCURRENCY}" ]]; then
+        BENCH_EXTRA_ARGS+=(--max-concurrency "${BENCH_MAX_CONCURRENCY}")
     fi
 }
 
@@ -115,6 +127,7 @@ trap cleanup INT
 trap cleanup USR1
 trap cleanup TERM
 build_visual_token_pruning_args
+build_bench_args
 
 # clear previous cache
 echo "remove previous ec cache folder"
@@ -204,6 +217,7 @@ vllm bench serve \
   --seed                0 \
   --temperature         "$BENCH_TEMPERATURE" \
   --num-prompts         "$NUM_PROMPTS" \
+  "${BENCH_EXTRA_ARGS[@]}" \
   --port                "$PROXY_PORT"
 
 PIDS+=($!)
