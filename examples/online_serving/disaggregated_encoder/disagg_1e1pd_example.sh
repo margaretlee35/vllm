@@ -21,6 +21,10 @@ EC_SHARED_STORAGE_PATH="${EC_SHARED_STORAGE_PATH:-/tmp/ec_cache}"
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-12000}"   # wait_for_server timeout
 
 NUM_PROMPTS="${NUM_PROMPTS:-100}"    # number of prompts to send in benchmark
+VISUAL_TOKEN_PRUNING_METHOD="${VISUAL_TOKEN_PRUNING_METHOD:-}"
+VISUAL_TOKEN_PRUNING_RATE="${VISUAL_TOKEN_PRUNING_RATE:-}"
+VISION_ZIP_DOMINANT_RATIO="${VISION_ZIP_DOMINANT_RATIO:-}"
+VISION_ZIP_ATTENTION_LAYER="${VISION_ZIP_ATTENTION_LAYER:-}"
 
 ###############################################################################
 # Helpers
@@ -32,6 +36,40 @@ START_TIME=$(date +"%Y%m%d_%H%M%S")
 ENC_LOG=$LOG_PATH/encoder_${START_TIME}.log
 PD_LOG=$LOG_PATH/pd_${START_TIME}.log
 PROXY_LOG=$LOG_PATH/proxy_${START_TIME}.log
+declare -a VISUAL_TOKEN_PRUNING_ARGS=()
+
+build_visual_token_pruning_args() {
+    case "${VISUAL_TOKEN_PRUNING_METHOD,,}" in
+        ""|none)
+            ;;
+        visionzip|cdpruner)
+            VISUAL_TOKEN_PRUNING_ARGS+=(
+                --visual-token-pruning-method "${VISUAL_TOKEN_PRUNING_METHOD,,}"
+            )
+            ;;
+        *)
+            echo "Unsupported VISUAL_TOKEN_PRUNING_METHOD: ${VISUAL_TOKEN_PRUNING_METHOD}" >&2
+            exit 1
+            ;;
+    esac
+
+    if [[ -n "${VISUAL_TOKEN_PRUNING_RATE}" ]]; then
+        VISUAL_TOKEN_PRUNING_ARGS+=(--vt-prune-rate "${VISUAL_TOKEN_PRUNING_RATE}")
+    fi
+
+    if [[ "${VISUAL_TOKEN_PRUNING_METHOD,,}" == "visionzip" ]]; then
+        if [[ -n "${VISION_ZIP_DOMINANT_RATIO}" ]]; then
+            VISUAL_TOKEN_PRUNING_ARGS+=(
+                --vision-zip-dominant-ratio "${VISION_ZIP_DOMINANT_RATIO}"
+            )
+        fi
+        if [[ -n "${VISION_ZIP_ATTENTION_LAYER}" ]]; then
+            VISUAL_TOKEN_PRUNING_ARGS+=(
+                --vision-zip-attention-layer "${VISION_ZIP_ATTENTION_LAYER}"
+            )
+        fi
+    fi
+}
 
 wait_for_server() {
     local port=$1
@@ -75,6 +113,7 @@ cleanup() {
 trap cleanup INT
 trap cleanup USR1
 trap cleanup TERM
+build_visual_token_pruning_args
 
 # clear previous cache
 echo "remove previous ec cache folder"
@@ -102,6 +141,7 @@ CUDA_VISIBLE_DEVICES="$GPU_E" vllm serve "$MODEL" \
             "shared_storage_path": "'"$EC_SHARED_STORAGE_PATH"'"
         }
     }' \
+    "${VISUAL_TOKEN_PRUNING_ARGS[@]}" \
     >"${ENC_LOG}" 2>&1 &
 
 PIDS+=($!)
@@ -123,6 +163,7 @@ CUDA_VISIBLE_DEVICES="$GPU_PD" vllm serve "$MODEL" \
             "shared_storage_path": "'"$EC_SHARED_STORAGE_PATH"'"
         }
     }' \
+    "${VISUAL_TOKEN_PRUNING_ARGS[@]}" \
     >"${PD_LOG}" 2>&1 &
 
 PIDS+=($!)
