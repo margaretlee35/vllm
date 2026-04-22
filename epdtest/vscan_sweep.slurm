@@ -36,18 +36,23 @@ for d in .cache .triton .nv; do
     ln -sfn "$target" "$link"
 done
 
-# Conda activation
-eval "$(conda shell.bash hook 2>/dev/null)"
-conda activate vllm
+# Conda activation — try hook first, fall back to direct source
+eval "$(conda shell.bash hook 2>/dev/null)" || true
+conda activate vllm 2>/dev/null || source /work/10299/varumugam/ls6/miniforge3/envs/vllm/bin/activate
+
+# Verify conda env is active
+if [[ "$(python --version 2>&1)" != *"3.11"* ]]; then
+    echo "ERROR: Python 3.11 not active. Conda activation failed." >&2
+    exit 1
+fi
 
 # Fix libstdc++ mismatch with TACC system libs
-export LD_PRELOAD=$CONDA_PREFIX/lib/libstdc++.so.6
+export LD_PRELOAD=/work/10299/varumugam/ls6/miniforge3/envs/vllm/lib/libstdc++.so.6
 
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
-SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
+REPO_ROOT="/work/10299/varumugam/ls6/vllm"
 cd "$REPO_ROOT"
 
 export TOPOLOGY="${TOPOLOGY:-1e1pd}"
