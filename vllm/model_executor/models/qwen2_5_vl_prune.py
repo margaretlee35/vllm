@@ -1083,14 +1083,11 @@ class Qwen2_5_VLDivPruneForConditionalGeneration(
         model: Qwen2_5_VLPruneForConditionalGeneration,
         image_input: Qwen2_5_VLImageInputs,
     ) -> tuple[torch.Tensor, ...]:
-        image_embeds = model._process_image_input(image_input)
+        image_embeds_split = model._process_image_input(image_input)
 
         grid_thw = image_input["image_grid_thw"]
         merge_size = model.visual.spatial_merge_size
-        sizes = (grid_thw.prod(-1) // merge_size // merge_size).tolist()
         grid_thw_list = grid_thw.tolist()
-
-        image_embeds_split = image_embeds.split(sizes)
         image_embeds_out = []
         for emb, size in zip(image_embeds_split, grid_thw_list):
             positions = compute_mrope_for_media(size, merge_size).to(emb.device)
@@ -1111,13 +1108,3 @@ class Qwen2_5_VLDivPruneForConditionalGeneration(
             video_embeddings,
             video_input,
         )
-
-    @staticmethod
-    def _process_video_input_for_pruning(
-        model: Qwen2_5_VLPruneForConditionalGeneration,
-        video_input: Qwen2_5_VLVideoInputs,
-        video_embeddings: tuple[torch.Tensor, ...],
-    ) -> tuple[torch.Tensor, ...]:
-        del video_input, video_embeddings
-        model._raise_cdpruner_not_implemented()
-        raise RuntimeError("unreachable")
