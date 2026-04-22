@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH -J vscan-sweep
-#SBATCH -o vscan-sweep.%j.out
-#SBATCH -e vscan-sweep.%j.err
+#SBATCH -J vscan-Ne1p1d
+#SBATCH -o vscan-Ne1p1d.%j.out
+#SBATCH -e vscan-Ne1p1d.%j.err
 #SBATCH -p gpu-a100
 #SBATCH -N 1
-#SBATCH -n 2
+#SBATCH -n 3
 #SBATCH -t 02:00:00
 #SBATCH --mail-user=varun.bala@utexas.edu
 #SBATCH --mail-type=all
@@ -55,18 +55,24 @@ export LD_PRELOAD=/work/10299/varumugam/ls6/miniforge3/envs/vllm/lib/libstdc++.s
 REPO_ROOT="/work/10299/varumugam/ls6/vllm"
 cd "$REPO_ROOT"
 
-export TOPOLOGY="${TOPOLOGY:-1e1pd}"
-export BENCHMARK="${BENCHMARK:-randommm}"
+export TOPOLOGY="Ne1p1d"
+export BENCHMARK="randommm"
 export PRUNE_MODE="vscan"
 export TIMEOUT_SECONDS=600
 export SERVER_READY_TIMEOUT_SECONDS=300
 
-echo "=== VScan sweep starting at $(date) ==="
+# Ne1p1d: 2 encoders on GPU 0,2 — prefill+decode on GPU 1
+export GPU_E="0,2"
+export GPU_P="1"
+export GPU_D="1"
+
+echo "=== VScan Ne1p1d sweep starting at $(date) ==="
 echo "Node: $(hostname)"
 echo "GPUs: $(nvidia-smi --query-gpu=index,name --format=csv,noheader)"
+echo "Topology: $TOPOLOGY (GPU_E=$GPU_E GPU_P=$GPU_P GPU_D=$GPU_D)"
 echo ""
 
 bash ./epdtest/sweep.sh "$PRUNE_MODE"
 
 echo ""
-echo "=== VScan sweep finished at $(date) ==="
+echo "=== VScan Ne1p1d sweep finished at $(date) ==="
