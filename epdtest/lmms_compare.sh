@@ -30,8 +30,8 @@ TABLE_SUMMARY_LOG="$EVAL_ROOT/lmms_sweep_summary.md"
 
 # Cases: case_name|topology|gpu_e|gpu_p|gpu_d
 CASES=(
-  "1e1p1d_e0_p1_d2|1e1p1d|0|1|2"
-  "Ne1p1d_e0-1_p1_d2|Ne1p1d|0,1|1|2"
+  "1e1p1d_e1_p2_d3|1e1p1d|1|2|3"
+  # "Ne1p1d_e0-1_p1_d2|Ne1p1d|0,1|1|2"
   # "Ne1p1d_e0-2_p1_d2|Ne1p1d|0,2|1|2"
   # "Ne1p1d_e0-1-2_p1_d2|Ne1p1d|0,1,2|1|2"
 )
