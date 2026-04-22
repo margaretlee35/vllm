@@ -192,8 +192,11 @@ def _build_reverse_indices(
     if not window_index_parts:
         return torch.zeros(0, dtype=torch.long, device=device)
 
-    window_index = torch.cat(window_index_parts).to(device=device)
-    return Qwen2_5_VisionTransformer.invert_permutation(window_index)
+    # invert_permutation uses pin_memory which requires CPU tensors.
+    # Build on CPU, invert, then move to the target device.
+    window_index = torch.cat(window_index_parts).cpu()
+    reverse_indices = Qwen2_5_VisionTransformer.invert_permutation(window_index)
+    return reverse_indices.to(device=device)
 
 
 # ---------------------------------------------------------------------------
