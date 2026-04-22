@@ -60,7 +60,7 @@ class MultiModalDummyOptionsBuiltins(TypedDict, total=False):
 
 MMEncoderTPMode = Literal["weights", "data"]
 MMCacheType = Literal["shm", "lru"]
-VisualTokenPruningMethod = Literal["vision_zip", "cdpruner", "divprune"]
+VisualTokenPruningMethod = Literal["visionzip", "cdpruner", "divprune"]
 MMDummyOptions: TypeAlias = dict[str, BaseDummyOptions]
 """
 A dictionary containing an entry for each modality type of dummy data.
@@ -177,7 +177,7 @@ class MultiModalConfig:
     visual_token_pruning_method: VisualTokenPruningMethod | None = None
     """Selects the image-token pruning method used by prune-enabled wrappers.
 
-    If unset while `vt_prune_rate > 0`, defaults to `vision_zip`."""
+    If unset while `vt_prune_rate > 0`, defaults to `visionzip`."""
     vt_prune_rate: float | None = Field(default=None, ge=0.0, lt=1.0)
     """Sets the image-token pruning rate used by visual-token pruning methods.
     The value determines the fraction of selected visual tokens pruned before
@@ -250,8 +250,8 @@ class MultiModalConfig:
         method = value.strip().lower()
         if method in ("", "none", "noprune", "no_prune"):
             return None
-        if method in ("vision_zip", "visionzip"):
-            return "vision_zip"
+        if method == "visionzip":
+            return "visionzip"
         if method in ("cdpruner", "cdprune"):
             return "cdpruner"
         if method in ("divprune", "div_prune"):
@@ -259,7 +259,7 @@ class MultiModalConfig:
 
         raise ValueError(
             "visual_token_pruning_method must be one of: "
-            "'vision_zip'/'visionzip', 'cdpruner'/'cdprune', "
+            "'visionzip', 'cdpruner'/'cdprune', "
             "or 'divprune'/'div_prune'."
         )
 
@@ -313,11 +313,11 @@ class MultiModalConfig:
                 "'mm_processor_cache_type' is 'shm'."
             )
         if (
-            self.visual_token_pruning_method == "vision_zip"
+            self.visual_token_pruning_method == "visionzip"
             and not self.is_vision_zip_enabled()
         ):
             raise ValueError(
-                "'visual_token_pruning_method=\"vision_zip\"' requires "
+                "'visual_token_pruning_method=\"visionzip\"' requires "
                 "'vt_prune_rate' to be set to a value greater than 0."
             )
         if (
@@ -389,7 +389,7 @@ class MultiModalConfig:
         return (
             self.vt_prune_rate is not None
             and self.vt_prune_rate > 0
-            and self.get_visual_token_pruning_method() == "vision_zip"
+            and self.get_visual_token_pruning_method() == "visionzip"
         )
 
     def is_cdpruner_enabled(self) -> bool:
@@ -403,5 +403,5 @@ class MultiModalConfig:
         if self.visual_token_pruning_method is not None:
             return self.visual_token_pruning_method
         if self.vt_prune_rate is not None and self.vt_prune_rate > 0:
-            return "vision_zip"
+            return "visionzip"
         return None

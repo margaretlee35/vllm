@@ -24,10 +24,8 @@ TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-1800}"
 DEFAULT_VLLM_LIMIT_MM_PER_PROMPT='{"image": 8, "video": 1}'
 VLLM_LIMIT_MM_PER_PROMPT="${VLLM_LIMIT_MM_PER_PROMPT:-$DEFAULT_VLLM_LIMIT_MM_PER_PROMPT}"
 
-# Visual-token pruning knobs.
-VISUAL_TOKEN_PRUNING_RATE="${VISUAL_TOKEN_PRUNING_RATE:-0.5}"
-VISION_ZIP_DOMINANT_RATIO="${VISION_ZIP_DOMINANT_RATIO:-0.75}"
-VISION_ZIP_ATTENTION_LAYER="${VISION_ZIP_ATTENTION_LAYER:--2}"
+# Visual-token pruning knobs are resolved per method from PRUNE_CONFIG_FILE.
+# Direct terminal overrides for pruning knobs are intentionally ignored.
 
 # Prune wrapper architecture. Keep this aligned with model registry.
 PRUNE_WRAPPER_ARCH="${PRUNE_WRAPPER_ARCH:-Qwen2_5_VLPruneForConditionalGeneration}"
@@ -62,6 +60,10 @@ OPENAI_API_KEY="${OPENAI_API_KEY:-EMPTY}"
 FORCE_LOCAL_OPENAI_BASE_URL="${FORCE_LOCAL_OPENAI_BASE_URL:-1}"
 
 START_TIME=$(date +"%Y%m%d_%H%M%S")
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+GIT_ROOT=$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)
+PRUNE_CONFIG_FILE="${PRUNE_CONFIG_FILE:-$GIT_ROOT/epdtest/visual_token_pruning_configs.json}"
+PRUNE_CONFIG_PARSER="${PRUNE_CONFIG_PARSER:-$GIT_ROOT/epdtest/parse_config.py}"
 
 ###############################################################################
 # Helpers
@@ -75,6 +77,88 @@ normalize_method() {
             exit 2
             ;;
     esac
+}
+
+ensure_pruning_config_files() {
+    if [[ ! -f "$PRUNE_CONFIG_FILE" ]]; then
+        echo "Missing pruning config file: $PRUNE_CONFIG_FILE" >&2
+        exit 1
+    fi
+    if [[ ! -f "$PRUNE_CONFIG_PARSER" ]]; then
+        echo "Missing pruning config parser: $PRUNE_CONFIG_PARSER" >&2
+        exit 1
+    fi
+}
+
+enforce_config_only_pruning_knobs() {
+    local ignored=0
+    for var_name in VISUAL_TOKEN_PRUNING_RATE VISION_ZIP_DOMINANT_RATIO VISION_ZIP_ATTENTION_LAYER; do
+        if [[ -n "${!var_name:-}" ]]; then
+            ignored=1
+        fi
+        unset "$var_name" || true
+    done
+    if [[ "$ignored" -eq 1 ]]; then
+        echo "Ignoring direct pruning env vars (VISUAL_TOKEN_PRUNING_RATE, VISION_ZIP_DOMINANT_RATIO, VISION_ZIP_ATTENTION_LAYER)."
+        echo "Using method values from: $PRUNE_CONFIG_FILE"
+    fi
+}
+
+resolve_visual_token_pruning_config() {
+    local raw_method="${1:-}"
+    local python_bin
+    local parsed
+    local cfg_method=""
+    local cfg_rate=""
+    local cfg_dom_ratio=""
+    local cfg_attn_layer=""
+
+    raw_method="${raw_method,,}"
+    if command -v python3 >/dev/null 2>&1; then
+        python_bin="python3"
+    elif command -v python >/dev/null 2>&1; then
+        python_bin="python"
+    else
+        echo "python3 (or python) is required to parse ${PRUNE_CONFIG_FILE}" >&2
+        exit 1
+    fi
+
+    parsed=$("$python_bin" "$PRUNE_CONFIG_PARSER" "$PRUNE_CONFIG_FILE" "$raw_method")
+
+    while IFS=$'\t' read -r key value; do
+        case "$key" in
+            VISUAL_TOKEN_PRUNING_METHOD)
+                cfg_method="$value"
+                ;;
+            VISUAL_TOKEN_PRUNING_RATE)
+                cfg_rate="$value"
+                ;;
+            VISION_ZIP_DOMINANT_RATIO)
+                cfg_dom_ratio="$value"
+                ;;
+            VISION_ZIP_ATTENTION_LAYER)
+                cfg_attn_layer="$value"
+                ;;
+        esac
+    done <<< "$parsed"
+
+    if [[ -z "$cfg_method" || "$cfg_method" == "none" ]]; then
+        RESOLVED_VISUAL_TOKEN_PRUNING_METHOD="none"
+        RESOLVED_VISUAL_TOKEN_PRUNING_RATE=""
+        RESOLVED_VISION_ZIP_DOMINANT_RATIO=""
+        RESOLVED_VISION_ZIP_ATTENTION_LAYER=""
+        return 0
+    fi
+
+    RESOLVED_VISUAL_TOKEN_PRUNING_METHOD="$cfg_method"
+    RESOLVED_VISUAL_TOKEN_PRUNING_RATE="$cfg_rate"
+    if [[ "$cfg_method" == "visionzip" ]]; then
+        RESOLVED_VISION_ZIP_DOMINANT_RATIO="$cfg_dom_ratio"
+        RESOLVED_VISION_ZIP_ATTENTION_LAYER="$cfg_attn_layer"
+    else
+        RESOLVED_VISION_ZIP_DOMINANT_RATIO=""
+        RESOLVED_VISION_ZIP_ATTENTION_LAYER=""
+    fi
 }
 
 port_in_use() {
@@ -178,27 +262,32 @@ start_vllm_server() {
 
     local normalized_method
     normalized_method="$(normalize_method "$method")"
+    resolve_visual_token_pruning_config "$normalized_method"
 
-    case "$normalized_method" in
+    case "$RESOLVED_VISUAL_TOKEN_PRUNING_METHOD" in
         none)
             ;;
         visionzip)
             METHOD_ARGS+=(
                 --visual-token-pruning-method vision_zip
-                --vt-prune-rate "$VISUAL_TOKEN_PRUNING_RATE"
-                --vision-zip-dominant-ratio "$VISION_ZIP_DOMINANT_RATIO"
-                --vision-zip-attention-layer "$VISION_ZIP_ATTENTION_LAYER"
+                --vt-prune-rate "$RESOLVED_VISUAL_TOKEN_PRUNING_RATE"
+                --vision-zip-dominant-ratio "$RESOLVED_VISION_ZIP_DOMINANT_RATIO"
+                --vision-zip-attention-layer "$RESOLVED_VISION_ZIP_ATTENTION_LAYER"
             )
             ;;
         cdpruner)
             METHOD_ARGS+=(
                 --visual-token-pruning-method cdpruner
-                --vt-prune-rate "$VISUAL_TOKEN_PRUNING_RATE"
+                --vt-prune-rate "$RESOLVED_VISUAL_TOKEN_PRUNING_RATE"
             )
+            ;;
+        *)
+            echo "Unsupported VISUAL_TOKEN_PRUNING_METHOD from config: $RESOLVED_VISUAL_TOKEN_PRUNING_METHOD" >&2
+            exit 2
             ;;
     esac
 
-    if [[ "$normalized_method" != "none" ]]; then
+    if [[ "$RESOLVED_VISUAL_TOKEN_PRUNING_METHOD" != "none" ]]; then
         local prune_arch_json
         prune_arch_json=$(printf '{"architectures":["%s"]}' "$PRUNE_WRAPPER_ARCH")
         HF_OVERRIDES_ARGS+=(--hf-overrides "$prune_arch_json")
@@ -232,10 +321,10 @@ start_vllm_server() {
     verify_architecture "$normalized_method" "$server_log"
 
     echo "vLLM ready: method=${method} normalized=${normalized_method} port=${port}"
-    if [[ "$normalized_method" == "none" ]]; then
+    if [[ "$RESOLVED_VISUAL_TOKEN_PRUNING_METHOD" == "none" ]]; then
         echo "  visual_token_pruning_method=none (disabled)"
     else
-        echo "  visual_token_pruning_method=${normalized_method} rate=${VISUAL_TOKEN_PRUNING_RATE}"
+        echo "  visual_token_pruning_method=${RESOLVED_VISUAL_TOKEN_PRUNING_METHOD} rate=${RESOLVED_VISUAL_TOKEN_PRUNING_RATE}"
     fi
 }
 
@@ -375,9 +464,8 @@ Usage:
 
 Options (env):
   METHODS="none visionzip cdpruner"
-  VISUAL_TOKEN_PRUNING_RATE FLOAT
-  VISION_ZIP_DOMINANT_RATIO FLOAT
-  VISION_ZIP_ATTENTION_LAYER INT
+  PRUNE_CONFIG_FILE PATH
+  PRUNE_CONFIG_PARSER PATH
   LMMS_TASKS TASK_LIST
   LMMS_LIMIT INT
   -h, --help
@@ -388,11 +476,11 @@ Examples:
   bash epdtest/eval_lmms.sh cdpruner
   bash epdtest/eval_lmms.sh none visionzip
   METHODS="visionzip cdpruner" bash epdtest/eval_lmms.sh
-  METHODS="visionzip" VISUAL_TOKEN_PRUNING_RATE=0.4 bash epdtest/eval_lmms.sh
 
 Notes:
   - This runs LMMS-Eval sequentially per pruning method.
   - Supported methods: none, visionzip, cdpruner.
+  - Pruning knobs are always loaded from PRUNE_CONFIG_FILE.
   - Per-method outputs are written under EVAL_OUTPUT_ROOT.
 EOF
 }
@@ -416,12 +504,17 @@ echo "  HF_DATASETS_CACHE=$HF_DATASETS_CACHE"
 echo "  HUGGINGFACE_HUB_CACHE=$HUGGINGFACE_HUB_CACHE"
 echo "  EVAL_OUTPUT_ROOT=$EVAL_OUTPUT_ROOT"
 echo "  VLLM_LIMIT_MM_PER_PROMPT=$VLLM_LIMIT_MM_PER_PROMPT"
+echo "  PRUNE_CONFIG_FILE=$PRUNE_CONFIG_FILE"
+echo "  PRUNE_CONFIG_PARSER=$PRUNE_CONFIG_PARSER"
 
 read -r -a METHOD_LIST <<< "${METHODS}"
 if [[ ${#METHOD_LIST[@]} -eq 0 || -z "${METHOD_LIST[0]:-}" ]]; then
     echo "METHODS is empty. Example: METHODS='none visionzip' bash ./epdtest/eval_lmms.sh" >&2
     exit 2
 fi
+
+ensure_pruning_config_files
+enforce_config_only_pruning_knobs
 idx=0
 for method in "${METHOD_LIST[@]}"; do
     port=$((BASE_PORT + idx))

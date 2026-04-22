@@ -28,10 +28,6 @@ from vllm.forward_context import set_forward_context
 from vllm.model_executor.layers.activation import get_act_and_mul_fn
 from vllm.model_executor.layers.layernorm import RMSNorm
 from vllm.multimodal import MULTIMODAL_REGISTRY
-from vllm.multimodal.evs import (
-    compute_mrope_for_media,
-    compute_retained_tokens_count,
-)
 from vllm.multimodal.inputs import (
     MultiModalFeatureSpec,
     MultiModalFieldConfig,
@@ -54,10 +50,150 @@ from .qwen2_5_vl import (
 from .utils import maybe_prefix
 from .utils import cast_overflow_tensors
 
-VisualTokenPruningMethod = Literal["vision_zip", "cdpruner", "divprune"]
+VisualTokenPruningMethod = Literal["visionzip", "cdpruner", "divprune"]
 _CDPRUNER_NOT_IMPLEMENTED = (
     "Qwen2.5-VL 'cdpruner' visual-token pruning is not implemented yet."
 )
+
+
+def _compute_retained_tokens_count(
+    tokens_per_frame: int,
+    num_frames: int,
+    q: float,
+) -> int:
+    total_tokens = tokens_per_frame * num_frames
+    evs_num_tokens = int(total_tokens * (1 - q))
+    min_num_tokens = tokens_per_frame
+    return max(min_num_tokens, evs_num_tokens)
+
+
+def _compute_mrope_for_media(
+    media_size_thw: torch.LongTensor | tuple[int, int, int] | list[int],
+    spatial_merge_size: int,
+    tokens_per_second: float = 1.0,
+    video_second_per_grid: float = 1.0,
+) -> torch.Tensor:
+    llm_grid_t, media_h, media_w = map(int, media_size_thw)
+    llm_grid_h = media_h // spatial_merge_size
+    llm_grid_w = media_w // spatial_merge_size
+
+    t_index = (
+        (
+            torch.arange(llm_grid_t)
+            .view(-1, 1)
+            .expand(-1, llm_grid_h * llm_grid_w)
+            .mul(tokens_per_second * video_second_per_grid)
+        )
+        .long()
+        .flatten()
+    )
+    h_index = (
+        torch.arange(llm_grid_h)
+        .view(1, -1, 1)
+        .expand(llm_grid_t, -1, llm_grid_w)
+        .flatten()
+    )
+    w_index = (
+        torch.arange(llm_grid_w)
+        .view(1, 1, -1)
+        .expand(llm_grid_t, llm_grid_h, -1)
+        .flatten()
+    )
+    llm_grid_w_channel = (
+        torch.tensor([llm_grid_w])
+        .view(1, 1, 1)
+        .expand(llm_grid_t, llm_grid_h, llm_grid_w)
+        .flatten()
+    )
+
+    return torch.stack([t_index, h_index, w_index, llm_grid_w_channel], dim=1)
+
+
+def _recompute_mrope_positions_qwen2_5_prune(
+    input_ids: torch.LongTensor,
+    multimodal_positions: list[torch.Tensor],
+    mrope_positions: torch.LongTensor,
+    num_computed_tokens: int,
+    vision_start_token_id: int,
+    image_token_id: int,
+    video_token_id: int,
+) -> tuple[torch.LongTensor, int]:
+    # Local mRoPE recompute for Qwen2.5-VL prune wrappers (4-channel mm_pos).
+    positions = cast(torch.LongTensor, mrope_positions.clone())
+    total_tokens = input_ids.numel()
+
+    image_mask = input_ids.eq(image_token_id)
+    video_mask = input_ids.eq(video_token_id)
+    media_mask = image_mask | video_mask
+    text_mask = ~media_mask
+
+    if len(multimodal_positions) == 0:
+        delta = int((positions.max().item() + 1) - total_tokens)
+        return positions, delta
+
+    total_mm_tokens = int(torch.count_nonzero(media_mask).item())
+    seen_mm_tokens = int(torch.count_nonzero(media_mask[:num_computed_tokens]).item())
+    if seen_mm_tokens >= total_mm_tokens:
+        delta = int((positions.max().item() + 1) - total_tokens)
+        return positions, delta
+
+    vision_start_indices = (input_ids == vision_start_token_id).nonzero(as_tuple=True)[
+        0
+    ]
+
+    for mm_pos in multimodal_positions:
+        seen_vision_start_indices = vision_start_indices[
+            vision_start_indices < num_computed_tokens
+        ]
+
+        if len(seen_vision_start_indices):
+            last_vision_start_token = int(seen_vision_start_indices[-1].item())
+            seen_mm_before_last_vision_start = int(
+                torch.count_nonzero(media_mask[:last_vision_start_token]).item()
+            )
+            in_middle_of_media = seen_mm_tokens > seen_mm_before_last_vision_start
+            if in_middle_of_media:
+                mm_embeddings_seen = seen_mm_tokens - seen_mm_before_last_vision_start
+                global_mm_start = last_vision_start_token
+            else:
+                pending_starts = vision_start_indices[
+                    vision_start_indices >= num_computed_tokens
+                ]
+                if pending_starts.numel() == 0:
+                    break
+                global_mm_start = int(pending_starts[0].item())
+                mm_embeddings_seen = 0
+        else:
+            pending_starts = vision_start_indices[
+                vision_start_indices >= num_computed_tokens
+            ]
+            if pending_starts.numel() == 0:
+                break
+            global_mm_start = int(pending_starts[0].item())
+            mm_embeddings_seen = 0
+
+        if global_mm_start >= total_tokens:
+            break
+
+        base = positions[-1, global_mm_start] + 1
+        local_start = global_mm_start + 1 + mm_embeddings_seen
+        local_end = min(local_start + mm_pos.shape[1], total_tokens)
+        if local_start >= local_end:
+            continue
+
+        active_len = local_end - local_start
+        positions[:, local_start:local_end] = mm_pos[0:3, :active_len] + base
+
+        offset = mm_pos[3, 0] + base
+        if local_end < total_tokens:
+            text_pos_sum = torch.cumsum(text_mask[local_end:].long(), dim=0)
+            positions[:, local_end:total_tokens] = text_pos_sum + offset - 1
+
+        num_computed_tokens += active_len
+        seen_mm_tokens += active_len
+
+    mrope_positions_delta = int((positions.max() + 1 - total_tokens).item())
+    return positions, mrope_positions_delta
 
 
 class _VisualTokenPruneMultiModalConfig(Protocol):
@@ -91,7 +227,7 @@ def _get_qwen2_5_prune_config(
     mm_config: _VisualTokenPruneMultiModalConfig | None,
 ) -> _VisionZipConfig | _CDPrunerConfig | _DivPruneConfig | None:
     pruning_method = _get_qwen2_5_visual_token_pruning_method(mm_config)
-    if pruning_method == "vision_zip":
+    if pruning_method == "visionzip":
         return cast(_VisionZipConfig, mm_config)
     if pruning_method == "cdpruner":
         return cast(_CDPrunerConfig, mm_config)
@@ -103,7 +239,7 @@ def _get_qwen2_5_prune_config(
 def _get_qwen2_5_vision_zip_config(
     mm_config: _VisualTokenPruneMultiModalConfig | None,
 ) -> _VisionZipConfig | None:
-    if _get_qwen2_5_visual_token_pruning_method(mm_config) != "vision_zip":
+    if _get_qwen2_5_visual_token_pruning_method(mm_config) != "visionzip":
         return None
     return cast(_VisionZipConfig, _get_qwen2_5_prune_config(mm_config))
 
@@ -147,7 +283,7 @@ def apply_qwen2_5_visual_token_pruning(
     if pruning_method is None:
         return image_features, positions
 
-    if pruning_method == "vision_zip":
+    if pruning_method == "visionzip":
         return apply_qwen2_5_vision_zip(
             image_features,
             importance_scores,
@@ -689,7 +825,7 @@ class Qwen2_5_VLPruneMultiModalProcessor(Qwen2_5_VLMultiModalProcessor):
                 tokens_per_frame = (h // image_processor.merge_size) * (
                     w // image_processor.merge_size
                 )
-                num_tokens = compute_retained_tokens_count(
+                num_tokens = _compute_retained_tokens_count(
                     tokens_per_frame,
                     t,
                     mm_config.video_pruning_rate,
@@ -805,6 +941,40 @@ class Qwen2_5_VLPruneForConditionalGeneration(
         mrope_position_delta = (llm_positions.max() + 1 - len(input_tokens)).item()
         return torch.from_numpy(llm_positions), mrope_position_delta
 
+    def recompute_mrope_positions(
+        self,
+        input_ids: list[int],
+        multimodal_embeddings: tuple[torch.Tensor, ...],
+        mrope_positions: torch.LongTensor,
+        num_computed_tokens: int,
+    ) -> tuple[tuple[torch.Tensor, ...], torch.Tensor, int]:
+        image_token_id = self.config.image_token_id
+        video_token_id = self.config.video_token_id
+        vision_start_token_id = self.config.vision_start_token_id
+
+        device = (
+            multimodal_embeddings[0].device
+            if len(multimodal_embeddings)
+            else mrope_positions.device
+        )
+        input_ids_t = torch.as_tensor(input_ids, device=device, dtype=torch.long)
+
+        mm_embeddings_out = [mm[:, :-4] for mm in multimodal_embeddings]
+        mm_embeddings_pos = [
+            mm[:, -4:].permute(1, 0).long() for mm in multimodal_embeddings
+        ]
+
+        positions, mrope_positions_delta = _recompute_mrope_positions_qwen2_5_prune(
+            input_ids_t,
+            mm_embeddings_pos,
+            mrope_positions,
+            num_computed_tokens,
+            vision_start_token_id,
+            image_token_id,
+            video_token_id,
+        )
+        return tuple(mm_embeddings_out), positions, mrope_positions_delta
+
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__(vllm_config=vllm_config, prefix=prefix)
         self.config.vision_config.architectures = ["CLIPPrunedModel"]
@@ -826,13 +996,13 @@ class Qwen2_5_VLPruneForConditionalGeneration(
         self.divprune_config: _DivPruneConfig | None = None
         self.is_vision_zip_recompute_enabled = (
             self.is_visual_token_pruning_enabled
-            and self.visual_token_pruning_method == "vision_zip"
+            and self.visual_token_pruning_method == "visionzip"
         )
 
         self._prune_impl_cls: type[Any] | None = None
         if (
             self.is_visual_token_pruning_enabled
-            and self.visual_token_pruning_method == "vision_zip"
+            and self.visual_token_pruning_method == "visionzip"
         ):
             self._prune_impl_cls = Qwen2_5_VLVisionZipForConditionalGeneration
         elif (
@@ -968,7 +1138,7 @@ class Qwen2_5_VLVisionZipForConditionalGeneration(
             grid_thw_list,
             second_per_grid_ts,
         ):
-            positions = compute_mrope_for_media(
+            positions = _compute_mrope_for_media(
                 size,
                 merge_size,
                 tokens_per_second=tokens_per_second,
@@ -1015,7 +1185,7 @@ class Qwen2_5_VLVisionZipForConditionalGeneration(
             image_keys_split,
             grid_thw_list,
         ):
-            positions = compute_mrope_for_media(size, merge_size).to(emb.device)
+            positions = _compute_mrope_for_media(size, merge_size).to(emb.device)
             emb, positions = apply_qwen2_5_vision_zip(
                 emb,
                 scores,
@@ -1093,7 +1263,7 @@ class Qwen2_5_VLDivPruneForConditionalGeneration(
         image_embeds_split = image_embeds.split(sizes)
         image_embeds_out = []
         for emb, size in zip(image_embeds_split, grid_thw_list):
-            positions = compute_mrope_for_media(size, merge_size).to(emb.device)
+            positions = _compute_mrope_for_media(size, merge_size).to(emb.device)
             emb, positions = apply_qwen2_5_divprune(
                 emb, positions, model.divprune_config
             )
@@ -1111,13 +1281,3 @@ class Qwen2_5_VLDivPruneForConditionalGeneration(
             video_embeddings,
             video_input,
         )
-
-    @staticmethod
-    def _process_video_input_for_pruning(
-        model: Qwen2_5_VLPruneForConditionalGeneration,
-        video_input: Qwen2_5_VLVideoInputs,
-        video_embeddings: tuple[torch.Tensor, ...],
-    ) -> tuple[torch.Tensor, ...]:
-        del video_input, video_embeddings
-        model._raise_cdpruner_not_implemented()
-        raise RuntimeError("unreachable")

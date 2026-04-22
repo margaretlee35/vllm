@@ -3,6 +3,10 @@ set -euo pipefail
 
 # Shared 1e1pd runner for both BENCHMARK=simple and BENCHMARK=randommm.
 
+# -----------------------------------------------------------------------------
+# Configuration defaults
+# -----------------------------------------------------------------------------
+
 declare -a PIDS=()
 
 MODEL="${MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}"
@@ -27,31 +31,142 @@ PD_MAX_NUM_BATCHED_TOKENS="${PD_MAX_NUM_BATCHED_TOKENS:-32768}"
 PD_MAX_NUM_SEQS="${PD_MAX_NUM_SEQS:-32}"
 BENCH_REQUEST_RATE="${BENCH_REQUEST_RATE:-32}"
 BENCH_MAX_CONCURRENCY="${BENCH_MAX_CONCURRENCY:-32}"
+BENCH_MIN_TOKENS="${BENCH_MIN_TOKENS:-1}"
 ENCODER_GPU_MEMORY_UTILIZATION="${ENCODER_GPU_MEMORY_UTILIZATION:-0.05}"
 VISUAL_TOKEN_PRUNING_METHOD="${VISUAL_TOKEN_PRUNING_METHOD:-}"
-VISUAL_TOKEN_PRUNING_RATE="${VISUAL_TOKEN_PRUNING_RATE:-}"
-VISION_ZIP_DOMINANT_RATIO="${VISION_ZIP_DOMINANT_RATIO:-}"
-VISION_ZIP_ATTENTION_LAYER="${VISION_ZIP_ATTENTION_LAYER:-}"
 IMAGES_PER_REQ="${IMAGES_PER_REQ:-1}"
 HF_DATASET_PATH="${HF_DATASET_PATH:-lmarena-ai/VisionArena-Chat}"
 METRICS_SAMPLING_INTERVAL_SECONDS="${METRICS_SAMPLING_INTERVAL_SECONDS:-1}"
+ENFORCE_EAGER="${ENFORCE_EAGER:-0}"
+declare -a VLLM_EAGER_ARGS=()
+case "${ENFORCE_EAGER,,}" in
+    1|true|yes|on)
+        VLLM_EAGER_ARGS+=(--enforce-eager)
+        ;;
+esac
 GPU_PROFILER="${GPU_PROFILER:-none}"
 NSYS_ENABLE_GPU_METRICS="${NSYS_ENABLE_GPU_METRICS:-1}"
 NSYS_GPU_METRICS_DEVICES="${NSYS_GPU_METRICS_DEVICES:-$GPU_E,$GPU_PD}"
 NSYS_GPU_METRICS_FREQUENCY="${NSYS_GPU_METRICS_FREQUENCY:-1000}"
 
-case "${BENCHMARK,,}" in
-    simple|randommm)
-        ;;
-    *)
-        echo "Unsupported BENCHMARK: $BENCHMARK (expected simple or randommm)" >&2
-        exit 1
-        ;;
-esac
+die() {
+    echo "$*" >&2
+    exit 1
+}
+
+validate_benchmark() {
+    case "${BENCHMARK,,}" in
+        simple|randommm)
+            ;;
+        *)
+            die "Unsupported BENCHMARK: $BENCHMARK (expected simple or randommm)"
+            ;;
+    esac
+}
 
 ulimit -n "${ULIMIT_NOFILE:-65535}" >/dev/null 2>&1 || true
 
 GIT_ROOT=$(git rev-parse --show-toplevel)
+PRUNE_CONFIG_FILE="${PRUNE_CONFIG_FILE:-$GIT_ROOT/epdtest/visual_token_pruning_configs.json}"
+PRUNE_CONFIG_PARSER="${PRUNE_CONFIG_PARSER:-$GIT_ROOT/epdtest/parse_config.py}"
+
+ensure_pruning_config_files() {
+    if [[ ! -f "$PRUNE_CONFIG_FILE" ]]; then
+        die "Missing pruning config file: $PRUNE_CONFIG_FILE"
+    fi
+    if [[ ! -f "$PRUNE_CONFIG_PARSER" ]]; then
+        die "Missing pruning config parser: $PRUNE_CONFIG_PARSER"
+    fi
+}
+
+apply_visual_token_pruning_config() {
+    local raw_method="${1:-}"
+    local python_bin
+    local parsed
+    local cfg_method=""
+    local cfg_rate=""
+    local cfg_dom_ratio=""
+    local cfg_attn_layer=""
+    raw_method="${raw_method,,}"
+
+    if command -v python3 >/dev/null 2>&1; then
+        python_bin="python3"
+    elif command -v python >/dev/null 2>&1; then
+        python_bin="python"
+    else
+        echo "python3 (or python) is required to parse ${PRUNE_CONFIG_FILE}" >&2
+        return 1
+    fi
+
+    parsed=$("$python_bin" "$PRUNE_CONFIG_PARSER" "$PRUNE_CONFIG_FILE" "$raw_method") || return 1
+
+    while IFS=$'\t' read -r key value; do
+        case "$key" in
+            VISUAL_TOKEN_PRUNING_METHOD)
+                cfg_method="$value"
+                ;;
+            VISUAL_TOKEN_PRUNING_RATE)
+                cfg_rate="$value"
+                ;;
+            VISION_ZIP_DOMINANT_RATIO)
+                cfg_dom_ratio="$value"
+                ;;
+            VISION_ZIP_ATTENTION_LAYER)
+                cfg_attn_layer="$value"
+                ;;
+        esac
+    done <<< "$parsed"
+
+    if [[ -z "$cfg_method" || "$cfg_method" == "none" ]]; then
+        VISUAL_TOKEN_PRUNING_METHOD="none"
+        VISUAL_TOKEN_PRUNING_RATE=""
+        VISION_ZIP_DOMINANT_RATIO=""
+        VISION_ZIP_ATTENTION_LAYER=""
+        return 0
+    fi
+
+    VISUAL_TOKEN_PRUNING_METHOD="$cfg_method"
+    VISUAL_TOKEN_PRUNING_RATE="${VISUAL_TOKEN_PRUNING_RATE:-$cfg_rate}"
+    if [[ "$cfg_method" == "visionzip" ]]; then
+        VISION_ZIP_DOMINANT_RATIO="${VISION_ZIP_DOMINANT_RATIO:-$cfg_dom_ratio}"
+        VISION_ZIP_ATTENTION_LAYER="${VISION_ZIP_ATTENTION_LAYER:-$cfg_attn_layer}"
+    else
+        VISION_ZIP_DOMINANT_RATIO=""
+        VISION_ZIP_ATTENTION_LAYER=""
+    fi
+}
+
+build_visual_token_pruning_args() {
+    declare -g -a VISUAL_TOKEN_PRUNING_ARGS=()
+    declare -g -a HF_OVERRIDES_ARGS=()
+
+    case "${VISUAL_TOKEN_PRUNING_METHOD,,}" in
+        ""|none|visionzip|cdpruner|divprune)
+            if [[ "${VISUAL_TOKEN_PRUNING_METHOD,,}" != "none" && -n "${VISUAL_TOKEN_PRUNING_METHOD:-}" ]]; then
+                VISUAL_TOKEN_PRUNING_ARGS+=(--visual-token-pruning-method "${VISUAL_TOKEN_PRUNING_METHOD,,}")
+            fi
+            ;;
+        *)
+            die "Unsupported VISUAL_TOKEN_PRUNING_METHOD: ${VISUAL_TOKEN_PRUNING_METHOD} (expected visionzip, cdpruner, divprune, or none)"
+            ;;
+    esac
+
+    if [[ -n "${VISUAL_TOKEN_PRUNING_RATE:-}" ]]; then
+        VISUAL_TOKEN_PRUNING_ARGS+=(--vt-prune-rate "$VISUAL_TOKEN_PRUNING_RATE")
+    fi
+    if [[ "${VISUAL_TOKEN_PRUNING_METHOD,,}" == "visionzip" ]]; then
+        if [[ -n "${VISION_ZIP_DOMINANT_RATIO:-}" ]]; then
+            VISUAL_TOKEN_PRUNING_ARGS+=(--vision-zip-dominant-ratio "$VISION_ZIP_DOMINANT_RATIO")
+        fi
+        if [[ -n "${VISION_ZIP_ATTENTION_LAYER:-}" ]]; then
+            VISUAL_TOKEN_PRUNING_ARGS+=(--vision-zip-attention-layer "$VISION_ZIP_ATTENTION_LAYER")
+        fi
+    fi
+
+    if [[ "${VISUAL_TOKEN_PRUNING_METHOD,,}" == "visionzip" || "${VISUAL_TOKEN_PRUNING_METHOD,,}" == "cdpruner" || "${VISUAL_TOKEN_PRUNING_METHOD,,}" == "divprune" ]]; then
+        HF_OVERRIDES_ARGS+=(--hf-overrides '{"architectures":["Qwen2_5_VLPruneForConditionalGeneration"]}')
+    fi
+}
 
 START_TIME=$(date +"%Y%m%d_%H%M%S")
 RUN_DIR="${RUN_DIR:-$LOG_PATH/$START_TIME}"
@@ -178,55 +293,30 @@ cleanup() {
     exit "$rc"
 }
 
+validate_benchmark
+ensure_pruning_config_files
+validate_profiler
+
 trap cleanup EXIT
 trap cleanup INT
 trap cleanup USR1
 trap cleanup TERM
 
-validate_profiler
-
 rm -rf "$EC_SHARED_STORAGE_PATH"
 mkdir -p "$EC_SHARED_STORAGE_PATH"
 
-CANONICAL_VISUAL_TOKEN_PRUNING_METHOD="${VISUAL_TOKEN_PRUNING_METHOD,,}"
-VLLM_VISUAL_TOKEN_PRUNING_METHOD=""
-case "$CANONICAL_VISUAL_TOKEN_PRUNING_METHOD" in
-    ""|none)
-        ;;
-    visionzip)
-        VLLM_VISUAL_TOKEN_PRUNING_METHOD="vision_zip"
-        ;;
-    cdpruner)
-        VLLM_VISUAL_TOKEN_PRUNING_METHOD="cdpruner"
-        ;;
-    divprune)
-        VLLM_VISUAL_TOKEN_PRUNING_METHOD="divprune"
-        ;;
-    *)
-        echo "Unsupported VISUAL_TOKEN_PRUNING_METHOD: ${VISUAL_TOKEN_PRUNING_METHOD} (expected visionzip, cdpruner, divprune, or none)" >&2
-        exit 1
-        ;;
-esac
+if ! apply_visual_token_pruning_config "${VISUAL_TOKEN_PRUNING_METHOD:-}"; then
+    die "Failed to load VISUAL_TOKEN_PRUNING_METHOD config: ${VISUAL_TOKEN_PRUNING_METHOD:-}"
+fi
 
-declare -a VISION_ZIP_ARGS=()
-if [[ -n "$VLLM_VISUAL_TOKEN_PRUNING_METHOD" ]]; then
-    VISION_ZIP_ARGS+=(--visual-token-pruning-method "$VLLM_VISUAL_TOKEN_PRUNING_METHOD")
-fi
-if [[ -n "${VISUAL_TOKEN_PRUNING_RATE:-}" ]]; then
-    VISION_ZIP_ARGS+=(--vt-prune-rate "$VISUAL_TOKEN_PRUNING_RATE")
-fi
-if [[ "$CANONICAL_VISUAL_TOKEN_PRUNING_METHOD" == "visionzip" && -n "${VISION_ZIP_DOMINANT_RATIO:-}" ]]; then
-    VISION_ZIP_ARGS+=(--vision-zip-dominant-ratio "$VISION_ZIP_DOMINANT_RATIO")
-fi
-if [[ "$CANONICAL_VISUAL_TOKEN_PRUNING_METHOD" == "visionzip" && -n "${VISION_ZIP_ATTENTION_LAYER:-}" ]]; then
-    VISION_ZIP_ARGS+=(--vision-zip-attention-layer "$VISION_ZIP_ATTENTION_LAYER")
-fi
+build_visual_token_pruning_args
 
 start_worker encoder "$ENC_LOG" "$GPU_E" \
     vllm serve "$MODEL" \
+    "${HF_OVERRIDES_ARGS[@]}" \
     --gpu-memory-utilization "$ENCODER_GPU_MEMORY_UTILIZATION" \
     --port "$ENCODE_PORT" \
-    --enforce-eager \
+    "${VLLM_EAGER_ARGS[@]}" \
     --enable-request-id-headers \
     --no-enable-prefix-caching \
     --max-num-batched-tokens 114688 \
@@ -239,13 +329,14 @@ start_worker encoder "$ENC_LOG" "$GPU_E" \
             "shared_storage_path": "'"$EC_SHARED_STORAGE_PATH"'"
         }
     }' \
-    "${VISION_ZIP_ARGS[@]}"
+    "${VISUAL_TOKEN_PRUNING_ARGS[@]}"
 
 start_worker prefill_decode "$PD_LOG" "$GPU_PD" \
     vllm serve "$MODEL" \
+    "${HF_OVERRIDES_ARGS[@]}" \
     --gpu-memory-utilization "$PD_GPU_MEMORY_UTILIZATION" \
     --port "$PREFILL_DECODE_PORT" \
-    --enforce-eager \
+    "${VLLM_EAGER_ARGS[@]}" \
     --enable-request-id-headers \
     --max-model-len "$PD_MAX_MODEL_LEN" \
     --max-num-batched-tokens "$PD_MAX_NUM_BATCHED_TOKENS" \
@@ -258,7 +349,7 @@ start_worker prefill_decode "$PD_LOG" "$GPU_PD" \
             "shared_storage_path": "'"$EC_SHARED_STORAGE_PATH"'"
         }
     }' \
-    "${VISION_ZIP_ARGS[@]}"
+    "${VISUAL_TOKEN_PRUNING_ARGS[@]}"
 
 wait_for_server "$ENCODE_PORT"
 wait_for_server "$PREFILL_DECODE_PORT"
@@ -297,6 +388,10 @@ declare -a BENCH_ARGS=(
     --max-concurrency "$BENCH_MAX_CONCURRENCY"
     --port "$PROXY_PORT"
 )
+
+if [[ "${BENCH_MIN_TOKENS:-0}" =~ ^[0-9]+$ ]] && (( BENCH_MIN_TOKENS > 0 )); then
+    BENCH_ARGS+=(--extra-body "{\"min_tokens\": ${BENCH_MIN_TOKENS}}")
+fi
 
 if [[ "$BENCHMARK" == "randommm" ]]; then
     BENCH_ARGS+=(

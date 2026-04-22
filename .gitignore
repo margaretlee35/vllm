@@ -246,4 +246,7 @@ csrc/cpu/cpu_attn_dispatch_generated.h
 
 
 # lmms eval
-epdtest/lmms_eval/
+epdtest/lmms/
+epdtest/vtp/
+lmms-eval/
+slurm_logs/
