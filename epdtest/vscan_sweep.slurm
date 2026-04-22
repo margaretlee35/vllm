@@ -58,6 +58,8 @@ cd "$REPO_ROOT"
 export TOPOLOGY="${TOPOLOGY:-1e1pd}"
 export BENCHMARK="${BENCHMARK:-randommm}"
 export PRUNE_MODE="vscan"
+export TIMEOUT_SECONDS=600
+export SERVER_READY_TIMEOUT_SECONDS=300
 
 echo "=== VScan sweep starting at $(date) ==="
 echo "Node: $(hostname)"
