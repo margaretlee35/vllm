@@ -110,6 +110,7 @@ async def init_generate_state(
             enable_force_include_usage=args.enable_force_include_usage,
             enable_log_outputs=args.enable_log_outputs,
             enable_log_deltas=args.enable_log_deltas,
+            enable_prerendered_prompts=args.enable_prerendered_prompts,
         )
         if "generate" in supported_tasks
         else None

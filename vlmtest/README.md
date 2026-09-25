@@ -112,6 +112,46 @@ What gets launched (`vlmtest/scripts/disagg_1e1p1d.sh`):
 
 `vllm bench serve` drives the proxy on port 10001.
 
+### Only the encoder renders the request
+
+By default, only E fetches, decodes and preprocesses the media. P and D take the
+prompt that E rendered. `--no-forward-rendered` switches back to the old flow,
+in which E, P and D each render every request.
+
+This is how it works. The proxy (`--forward-rendered-prompt`) sends E the whole
+request once, not one text-stripped request per item. E answers with a
+`rendered_prompt`:
+
+- the prompt token ids, with placeholders expanded
+- for each media item, its mm hash (the EC cache key) and placeholder range
+- each item's small kwargs, such as `video_grid_thw` and `second_per_grid_ts`,
+  which the language model needs for M-RoPE
+
+Pixel tensors are left out; any kwarg over 4 KB is dropped. The proxy then sends
+P and D the request with the media removed from `messages` and the
+`rendered_prompt` added. They build the engine prompt directly and do not call
+the renderer. That works for two reasons:
+
+- P finds each embedding in the EC cache under its hash, so it never needs the
+  pixels.
+- D receives the whole prompt's KV from P, so it never runs the encoder either.
+
+All three servers need `--enable-prerendered-prompts`. The code is in
+`vllm/entrypoints/openai/chat_completion/prerendered.py`.
+
+Things to know:
+- **Fallback.** If E cannot return a rendered prompt, the proxy logs `Encoder
+  returned no rendered prompt` and forwards the original request, so P and D
+  render it as before. This happens with `--mm-processor-cache-type shm`, for
+  example. A clean run has no such lines in `proxy.log`.
+- **A supplied prompt carries no pixels.** If P misses in the EC cache for an
+  item received this way, its vision tower runs without pixel inputs and fails.
+  The proxy only forwards after E has returned, so the embedding is already
+  stored.
+- **The request to E now includes the text.** Its GPU cost does not change: an
+  EC producer runs only the vision tower. With several encoder servers, each
+  request goes to one of them (round robin), not one item per server.
+
 ## 2. Preprocessing latency
 
 ```bash
@@ -314,8 +354,9 @@ default clips:
 `NVDEC_GPU` does this for serving. Each server then sees
 `CUDA_VISIBLE_DEVICES=<its GPU>,<NVDEC_GPU>` and gets `VLLM_NVDEC_DEVICE=1`, so
 the model stays on the first GPU. It costs about 0.9 GB of CUDA context per
-server on the NVDEC GPU. Note that all three servers decode each video, because
-every one of them receives the full request and preprocesses it.
+server on the NVDEC GPU. With `--no-forward-rendered`, all three servers decode
+each video, because each one receives the full request and preprocesses it. By
+default only the encoder does (see section 1).
 
 Two more points:
 - Even with decode at 4 ms, `apply_hf_processor_ms` (CPU resize, normalise,
@@ -355,12 +396,12 @@ BENCH_MAX_CONCURRENCY=1 BENCH_REQUEST_RATE=inf TRACE_SKIP_FIRST=4 \
 | `e_encode` | vision tower forward | encoder worker, GPU-synced |
 | `e_ec_save` | embedding GPU→CPU + safetensors write to `EC_SHARED_STORAGE_PATH` | EC connector |
 | `e_to_p` | encoder response → proxy → prefill request | gap between servers |
-| `p_render` | prefill re-renders the request: decode + HF processor again | prefill API server |
+| `p_render` | prefill renders the request: rebuilds the forwarded prompt, or with `--no-forward-rendered`, decode + HF processor again | prefill API server |
 | `p_queue` | API → scheduled | prefill scheduler |
 | `p_ec_load` | embedding file read + CPU→GPU | EC connector, GPU-synced |
 | `p_prefill` | scheduled → first token, minus `p_ec_load` | prefill scheduler |
 | `p_to_d` | prefill response → proxy → decode request | gap between servers |
-| `d_render` | decode re-renders the request too | decode API server |
+| `d_render` | decode renders the request, the same way as prefill | decode API server |
 | `d_queue` | API → KV load starts | decode scheduler |
 | `d_kv` | NIXL P→D KV transfer (request start → receive finished) | decode scheduler |
 | `d_first_token` | KV received → first token | decode scheduler |

@@ -34,6 +34,12 @@ from vllm.entrypoints.openai.chat_completion.protocol import (
     ChatCompletionStreamResponse,
     ChatMessage,
 )
+from vllm.entrypoints.openai.chat_completion.prerendered import (
+    SlimItemCache,
+    decode_rendered_prompt,
+    encode_rendered_prompt,
+    text_only_conversation,
+)
 from vllm.entrypoints.openai.chat_completion.stream_harmony import (
     TokenState,
     extract_harmony_streaming_delta,
@@ -107,6 +113,7 @@ class OpenAIServingChat(OpenAIServing):
         enable_log_outputs: bool = False,
         enable_log_deltas: bool = True,
         default_chat_template_kwargs: dict[str, Any] | None = None,
+        enable_prerendered_prompts: bool = False,
     ) -> None:
         super().__init__(
             engine_client=engine_client,
@@ -122,6 +129,8 @@ class OpenAIServingChat(OpenAIServing):
         self.default_chat_template_kwargs = default_chat_template_kwargs or {}
         self.enable_log_outputs = enable_log_outputs
         self.enable_log_deltas = enable_log_deltas
+        self.enable_prerendered_prompts = enable_prerendered_prompts
+        self._slim_item_cache = SlimItemCache()
 
         # set up reasoning parser
         self.reasoning_parser_cls = ParserManager.get_reasoning_parser(
@@ -277,6 +286,36 @@ class OpenAIServingChat(OpenAIServing):
 
         return conversation, engine_prompts
 
+    async def use_rendered_prompt(
+        self,
+        request: ChatCompletionRequest,
+    ) -> tuple[list[ConversationMessage], list[ProcessorInputs]] | ErrorResponse:
+        """Take `request.rendered_prompt` as the prompt instead of rendering."""
+        if not self.enable_prerendered_prompts:
+            return self.create_error_response(
+                "rendered_prompt requires --enable-prerendered-prompts"
+            )
+        if self.use_harmony:
+            return self.create_error_response(
+                "rendered_prompt is not supported for this model"
+            )
+
+        error_check_ret = await self._check_model(request)
+        if error_check_ret is not None:
+            return error_check_ret
+        if self.engine_client.errored:
+            raise self.engine_client.dead_error
+
+        assert request.rendered_prompt is not None
+        try:
+            engine_prompt = decode_rendered_prompt(
+                request.rendered_prompt, cache_salt=request.cache_salt
+            )
+        except Exception as e:
+            return self.create_error_response(f"Invalid rendered_prompt: {e}")
+
+        return text_only_conversation(request.messages), [engine_prompt]
+
     async def create_chat_completion(
         self,
         request: ChatCompletionRequest,
@@ -307,11 +346,29 @@ class OpenAIServingChat(OpenAIServing):
                 chat_template_kwargs=chat_template_kwargs,  # type: ignore[call-arg]
             )
         with stage_trace.span("api_render"):
-            result = await self.render_chat_request(request)
+            if request.rendered_prompt is not None:
+                result = await self.use_rendered_prompt(request)
+            else:
+                result = await self.render_chat_request(request)
         if isinstance(result, ErrorResponse):
             return result
 
         conversation, engine_prompts = result
+
+        rendered_prompt = None
+        if self.enable_prerendered_prompts and request.rendered_prompt is None:
+            if request.return_rendered_prompt and len(engine_prompts) == 1:
+                rendered_prompt, reason = encode_rendered_prompt(
+                    engine_prompts[0], self._slim_item_cache
+                )
+                if rendered_prompt is None:
+                    logger.warning("Not returning rendered_prompt: %s", reason)
+            else:
+                # Remember the slim kwargs of items seen outside the E/P/D
+                # path too, in case the processor cache later hands them out
+                # as None.
+                for engine_prompt in engine_prompts:
+                    encode_rendered_prompt(engine_prompt, self._slim_item_cache)
 
         request_id = (
             f"chatcmpl-{self._base_request_id(raw_request, request.request_id)}"
@@ -418,7 +475,7 @@ class OpenAIServingChat(OpenAIServing):
                 reasoning_parser,
             )
 
-        return await self.chat_completion_full_generator(
+        response = await self.chat_completion_full_generator(
             request,
             result_generator,
             request_id,
@@ -428,6 +485,11 @@ class OpenAIServingChat(OpenAIServing):
             request_metadata,
             reasoning_parser,
         )
+        if rendered_prompt is not None and isinstance(
+            response, ChatCompletionResponse
+        ):
+            response.rendered_prompt = rendered_prompt
+        return response
 
     def get_chat_request_role(self, request: ChatCompletionRequest) -> str:
         if request.add_generation_prompt:

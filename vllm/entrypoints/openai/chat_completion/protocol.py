@@ -110,6 +110,7 @@ class ChatCompletionResponse(OpenAIBaseModel):
     kv_transfer_params: dict[str, Any] | None = Field(
         default=None, description="KVTransfer parameters."
     )
+    rendered_prompt: dict[str, Any] | None = None
 
 
 class ChatCompletionResponseStreamChoice(OpenAIBaseModel):
@@ -334,6 +335,27 @@ class ChatCompletionRequest(OpenAIBaseModel):
     kv_transfer_params: dict[str, Any] | None = Field(
         default=None,
         description="KVTransfer parameters used for disaggregated serving.",
+    )
+
+    return_rendered_prompt: bool = Field(
+        default=False,
+        description=(
+            "Disaggregated encoder serving: include the rendered prompt "
+            "(token ids, mm hashes, placeholders, small mm kwargs) as "
+            "`rendered_prompt` in the non-streaming response, for another "
+            "server to take as `rendered_prompt` instead of rendering the "
+            "request again. Needs --enable-prerendered-prompts."
+        ),
+    )
+    rendered_prompt: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Disaggregated encoder serving: a `rendered_prompt` returned by "
+            "the encoder. When set, the server uses it as the prompt and does "
+            "not render `messages`; the media embeddings must already be in "
+            "the EC cache (prefill) or the KV cache (decode). Needs "
+            "--enable-prerendered-prompts."
+        ),
     )
 
     vllm_xargs: dict[str, str | int | float | list[str | int | float]] | None = Field(

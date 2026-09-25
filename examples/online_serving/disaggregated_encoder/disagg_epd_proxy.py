@@ -15,12 +15,19 @@ For MM input we:
        (one request per item, with **all text removed**).
     3. Wait for all of them to succeed.
     4. Forward the *original* request to a decode server.
+
+With --forward-rendered-prompt, step 2 is instead one request carrying the
+whole prompt, and the encoder returns the prompt it rendered. Prefill and decode
+receive that rendered prompt without the media, so only the encoder fetches,
+decodes and preprocesses them (all servers need --enable-prerendered-prompts).
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
+import itertools
 import logging
 import os
 import random
@@ -52,6 +59,24 @@ decode_session: aiohttp.ClientSession | None = None
 
 
 MM_TYPES = {"image_url", "video_url", "audio_url", "input_audio"}
+
+# Output-side parameters dropped from the rendering request to the encoder,
+# which only has to render the prompt and produce one (dummy) token.
+ENCODER_DROPPED_PARAMS = (
+    "max_completion_tokens",
+    "min_tokens",
+    "n",
+    "stream_options",
+    "logprobs",
+    "top_logprobs",
+    "prompt_logprobs",
+    "response_format",
+    "structured_outputs",
+    "use_beam_search",
+    "kv_transfer_params",
+)
+
+_encoder_rr = itertools.count()
 
 
 def extract_mm_items(request_data: dict) -> list[dict]:
@@ -155,6 +180,104 @@ async def fanout_encoder_primer(
     logger.info(
         "[%s] All %d encoder requests completed successfully", req_id, len(mm_items)
     )
+
+
+def strip_mm_items(request_data: dict) -> dict:
+    """Copy of the request with every image/video/audio item removed."""
+    stripped = dict(request_data)
+    messages = []
+    for msg in request_data.get("messages", []):
+        content = msg.get("content")
+        if isinstance(content, list):
+            msg = dict(msg)
+            kept = [item for item in content if item.get("type") not in MM_TYPES]
+            msg["content"] = kept or ""
+        messages.append(msg)
+    stripped["messages"] = messages
+    return stripped
+
+
+async def encode_and_render(
+    orig_request: dict,
+    e_urls: list[str],
+    req_id: str,
+) -> dict:
+    """
+    Send the whole request to one encoder and use its rendered prompt.
+
+    Returns the request to forward to prefill / decode: the rendered prompt
+    with the media stripped from `messages`, or the original request when there
+    is nothing to encode or the encoder could not return a rendered prompt.
+    """
+    mm_items = extract_mm_items(orig_request)
+    if not mm_items:
+        logger.info("[%s] No multimodal items, skipping encoder", req_id)
+        return orig_request
+
+    target_url = e_urls[next(_encoder_rr) % len(e_urls)]
+    logger.info(
+        "[%s] Rendering %d multimodal items on %s", req_id, len(mm_items), target_url
+    )
+
+    encoder_req = copy.deepcopy(orig_request)
+    for key in ENCODER_DROPPED_PARAMS:
+        encoder_req.pop(key, None)
+    encoder_req["max_tokens"] = 1
+    encoder_req["stream"] = False
+    encoder_req["return_rendered_prompt"] = True
+
+    # Same child id shape as the per-item fan-out: <parent>:<index>:<random>
+    headers = {"x-request-id": f"{req_id}:0:{uuid.uuid4().hex[:6]}"}
+    try:
+        async with encode_session.post(
+            f"{target_url}/v1/chat/completions", json=encoder_req, headers=headers
+        ) as resp:
+            if resp.status != 200:
+                detail = await resp.text()
+                logger.error(
+                    "[%s] Encoder request returned status %s: %s",
+                    req_id,
+                    resp.status,
+                    detail,
+                )
+                raise HTTPException(
+                    status_code=resp.status,
+                    detail=f"Encoder request failed: {detail}",
+                )
+            body = await resp.json()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("[%s] Encoder request raised exception: %s", req_id, e)
+        raise HTTPException(
+            status_code=502, detail=f"Encoder request failed: {str(e)}"
+        ) from e
+
+    rendered_prompt = body.get("rendered_prompt")
+    if rendered_prompt is None:
+        logger.warning(
+            "[%s] Encoder returned no rendered prompt; prefill and decode will "
+            "render the request themselves",
+            req_id,
+        )
+        return orig_request
+
+    forwarded = strip_mm_items(orig_request)
+    forwarded["rendered_prompt"] = rendered_prompt
+    logger.info(
+        "[%s] Encoder done; forwarding rendered prompt (%d tokens)",
+        req_id,
+        len(rendered_prompt["prompt_token_ids"]),
+    )
+    return forwarded
+
+
+async def run_encoder(req_data: dict, e_urls: list[str], req_id: str) -> dict:
+    """Run the encoder stage; return the request for prefill / decode."""
+    if app.state.forward_rendered_prompt:
+        return await encode_and_render(req_data, e_urls, req_id)
+    await fanout_encoder_primer(req_data, e_urls, req_id)
+    return req_data
 
 
 async def maybe_prefill(
@@ -320,7 +443,7 @@ async def forward_non_stream(
 ) -> dict:
     try:
         # Step 1: Process through Encoder instance (if has MM input)
-        await fanout_encoder_primer(req_data, e_urls, req_id)
+        req_data = await run_encoder(req_data, e_urls, req_id)
 
         # Step 2: Process through Prefill instance
         req_data = await maybe_prefill(req_data, p_url, req_id)
@@ -348,7 +471,7 @@ async def forward_stream(
 ) -> AsyncIterator[str]:
     try:
         # Step 1: Process through Encoder instance (if has MM input)
-        await fanout_encoder_primer(req_data, e_urls, req_id)
+        req_data = await run_encoder(req_data, e_urls, req_id)
 
         # Step 2: Process through Prefill instance
         req_data = await maybe_prefill(req_data, p_url, req_id)
@@ -571,8 +694,18 @@ if __name__ == "__main__":
         required=True,
         help='Comma-separated decode URLs ("http://d1:8005,http://d2:8006")',
     )
+    parser.add_argument(
+        "--forward-rendered-prompt",
+        action="store_true",
+        help=(
+            "Send each request whole to one encoder and forward the prompt it "
+            "rendered to prefill / decode, so they skip media loading and "
+            "preprocessing. All servers need --enable-prerendered-prompts."
+        ),
+    )
 
     args = parser.parse_args()
+    app.state.forward_rendered_prompt = args.forward_rendered_prompt
     app.state.e_urls = [
         u.strip() for u in args.encode_servers_urls.split(",") if u.strip()
     ]
@@ -595,6 +728,7 @@ if __name__ == "__main__":
     logger.info("Encode servers: %s", app.state.e_urls)
     logger.info("Prefill instances %s", app.state.p_urls)
     logger.info("Decode servers: %s", app.state.d_urls)
+    logger.info("Forward rendered prompt: %s", app.state.forward_rendered_prompt)
 
     uvicorn.run(
         app,

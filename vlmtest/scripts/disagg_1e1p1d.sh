@@ -54,6 +54,9 @@ NVDEC_GPU="${NVDEC_GPU:-}"
 # $RUN_DIR/trace, broken down per request after the benchmark.
 STAGE_TRACE="${STAGE_TRACE:-0}"
 TRACE_SKIP_FIRST="${TRACE_SKIP_FIRST:-0}"
+# 1 = only the encoder renders each request (media decode + HF processor); the
+# proxy forwards its rendered prompt to P and D. 0 = all three render it.
+FORWARD_RENDERED="${FORWARD_RENDERED:-1}"
 
 case "${BENCHMARK,,}" in
     simple|randommm)
@@ -237,6 +240,13 @@ if [[ "$CANONICAL_VISUAL_TOKEN_PRUNING_METHOD" == "visionzip" && -n "${VISION_ZI
     VISION_ZIP_ARGS+=(--vision-zip-attention-layer "$VISION_ZIP_ATTENTION_LAYER")
 fi
 
+declare -a SERVER_RENDER_ARGS=()
+declare -a PROXY_RENDER_ARGS=()
+if [[ "$FORWARD_RENDERED" == "1" ]]; then
+    SERVER_RENDER_ARGS+=(--enable-prerendered-prompts)
+    PROXY_RENDER_ARGS+=(--forward-rendered-prompt)
+fi
+
 while port_in_use "$PREFILL_NIXL_SIDE_CHANNEL_PORT" || port_in_use "$DECODE_NIXL_SIDE_CHANNEL_PORT"; do
     PREFILL_NIXL_SIDE_CHANNEL_PORT=$((PREFILL_NIXL_SIDE_CHANNEL_PORT + 1))
     DECODE_NIXL_SIDE_CHANNEL_PORT=$((DECODE_NIXL_SIDE_CHANNEL_PORT + 1))
@@ -259,7 +269,8 @@ start_worker encoder "$ENC_LOG" "$GPU_E" \
             "shared_storage_path": "'"$EC_SHARED_STORAGE_PATH"'"
         }
     }' \
-    "${VISION_ZIP_ARGS[@]}"
+    "${VISION_ZIP_ARGS[@]}" \
+    "${SERVER_RENDER_ARGS[@]}"
 
 start_worker prefill "$P_LOG" "$GPU_P" \
     env VLLM_NIXL_SIDE_CHANNEL_PORT="$PREFILL_NIXL_SIDE_CHANNEL_PORT" \
@@ -283,7 +294,8 @@ start_worker prefill "$P_LOG" "$GPU_P" \
         "kv_connector": "NixlConnector",
         "kv_role": "kv_producer"
     }' \
-    "${VISION_ZIP_ARGS[@]}"
+    "${VISION_ZIP_ARGS[@]}" \
+    "${SERVER_RENDER_ARGS[@]}"
 
 start_worker decode "$D_LOG" "$GPU_D" \
     env VLLM_NIXL_SIDE_CHANNEL_PORT="$DECODE_NIXL_SIDE_CHANNEL_PORT" \
@@ -300,7 +312,8 @@ start_worker decode "$D_LOG" "$GPU_D" \
         "kv_connector": "NixlConnector",
         "kv_role": "kv_consumer"
     }' \
-    "${VISION_ZIP_ARGS[@]}"
+    "${VISION_ZIP_ARGS[@]}" \
+    "${SERVER_RENDER_ARGS[@]}"
 
 wait_for_server "$ENCODE_PORT"
 wait_for_server "$PREFILL_PORT"
@@ -312,6 +325,7 @@ python "${GIT_ROOT}/examples/online_serving/disaggregated_encoder/disagg_epd_pro
     --encode-servers-urls "http://localhost:$ENCODE_PORT" \
     --prefill-servers-urls "http://localhost:$PREFILL_PORT" \
     --decode-servers-urls "http://localhost:$DECODE_PORT" \
+    "${PROXY_RENDER_ARGS[@]}" \
     >"${PROXY_LOG}" 2>&1 &
 PIDS+=($!)
 

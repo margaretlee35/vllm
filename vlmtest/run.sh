@@ -32,6 +32,7 @@ VIDEO_BACKEND="${VIDEO_BACKEND:-opencv}"
 USER_TEXT_TOKENS="${USER_TEXT_TOKENS:-300}"
 AIPERF_VENV="${AIPERF_VENV:-$SCRIPT_DIR/.venv-aiperf}"
 STAGE_TRACE="${STAGE_TRACE:-0}"
+FORWARD_RENDERED="${FORWARD_RENDERED:-1}"
 
 # E / P / D each get their own GPU.
 GPU_E="${GPU_E:-0}"
@@ -54,6 +55,9 @@ Options:
   --num-prompts N               benchmark request count
   --stage-trace                 per-request E/P/D stage breakdown (adds GPU
                                 syncs: use for attribution, not throughput)
+  --no-forward-rendered         P and D render each request themselves (media
+                                decode + HF processor) instead of taking the
+                                encoder's rendered prompt
   -h, --help
 
 Examples:
@@ -94,6 +98,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --stage-trace)
             STAGE_TRACE=1
+            shift
+            ;;
+        --no-forward-rendered)
+            FORWARD_RENDERED=0
             shift
             ;;
         --videos-per-req)
@@ -151,6 +159,7 @@ esac
 export NUM_PROMPTS="${NUM_PROMPTS:-300}"
 export TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-900}"
 export MODEL LOG_PATH BENCHMARK IMAGES_PER_REQ GPU_E GPU_P GPU_D STAGE_TRACE
+export FORWARD_RENDERED
 if [[ "$VIDEO_BACKEND" == "nvdec" && -n "${NVDEC_GPU:-}" ]]; then
     export NVDEC_GPU
 else
@@ -222,6 +231,11 @@ elif [[ "$BENCHMARK" == "video" ]]; then
 fi
 echo "  num_prompts    : $NUM_PROMPTS"
 echo "  gpus           : E=$GPU_E P=$GPU_P D=$GPU_D"
+if [[ "$FORWARD_RENDERED" == "1" ]]; then
+    echo "  render         : encoder only (P/D take its rendered prompt)"
+else
+    echo "  render         : E, P and D each render the request"
+fi
 if [[ -n "${VISUAL_TOKEN_PRUNING_METHOD:-}" ]]; then
     echo "  vt_method      : $VISUAL_TOKEN_PRUNING_METHOD"
 fi

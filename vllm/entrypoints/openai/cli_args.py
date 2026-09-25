@@ -144,6 +144,12 @@ class BaseFrontendArgs:
     enable_tokenizer_info_endpoint: bool = False
     """Enable the `/tokenizer_info` endpoint. May expose chat
     templates and other tokenizer configuration."""
+    enable_prerendered_prompts: bool = False
+    """Disaggregated encoder serving: let chat requests ask for their rendered
+    prompt (`return_rendered_prompt`) and supply one instead of media
+    (`rendered_prompt`). A supplied prompt carries no pixel data, so enable this
+    only on servers behind a proxy that routes such requests after the encoder
+    has filled the EC cache."""
     enable_log_outputs: bool = False
     """If set to True, log model outputs (generations).
     Requires `--enable-log-requests`. As with `--enable-log-requests`,
