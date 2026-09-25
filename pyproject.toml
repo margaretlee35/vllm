@@ -30,7 +30,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Scientific/Engineering :: Information Analysis",
 ]
-requires-python = ">=3.10,<3.14"
+requires-python = ">=3.10, <3.13"
 dynamic = [ "version", "dependencies", "optional-dependencies"]
 
 [project.urls]
@@ -171,3 +171,27 @@ ure = "ure"
 
 [tool.uv]
 no-build-isolation-package = ["torch"]
+environments = ["python_full_version == '3.12.12' and sys_platform == 'linux' and platform_machine == 'aarch64'"]
+override-dependencies = [
+    "petit-kernel ; python_version < '0'"
+]
+# Keep the resolver from trading datasets down to 2.x (breaks with new pyarrow)
+constraint-dependencies = [
+    "datasets>=3",
+    # FA4 (vllm_flash_attn/cute) uses cute.core.ThrMma, removed after 4.4
+    "nvidia-cutlass-dsl<4.5",
+]
+# Use the precompiled vLLM wheel instead of compiling CUDA kernels on sync
+extra-build-variables = { vllm = { VLLM_USE_PRECOMPILED = "1" } }
+
+# PyPI's aarch64 torch wheels are CPU-only; pull CUDA builds for GB200
+[[tool.uv.index]]
+name = "pytorch-cu129"
+url = "https://download.pytorch.org/whl/cu129"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu129" }
+torchvision = { index = "pytorch-cu129" }
+torchaudio = { index = "pytorch-cu129" }
+

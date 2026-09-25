@@ -1,0 +1,25 @@
+
+168 requests (of 200 traced), ms
+
+stage               mean      p50      p90      p99  %ttft  description
+e_decode            96.1     81.3    236.9    385.3     7%  E  video decode (media load, incl. thread-pool wait)
+e_hf                78.0     77.0     79.6     96.7     6%  E  HF processor (resize / normalize / patchify)
+e_render_other     158.8      8.2    484.6   1173.4    11%  E  rest of render (chat template, tokenize)
+e_queue              3.7      3.9      4.2      4.7     0%  E  API -> engine core -> scheduled
+e_h2d                0.3      0.3      0.5      0.5     0%  E  collate + pin + CPU->GPU copy
+e_encode            21.8     21.3     22.9     30.2     2%  E  vision encoder forward
+e_ec_save            1.0      1.0      1.1      1.1     0%  E  embedding GPU->CPU + file write
+e_to_p             164.3     94.8    375.0    906.8    12%  E done -> P request arrives (response + proxy hop)
+p_render           216.2    166.0    411.7    848.3    16%  P  render (video decode + HF processor, again)
+p_queue              3.8      3.8      4.4      4.7     0%  P  API -> engine core -> scheduled
+p_ec_load            1.0      0.9      1.0      2.0     0%  P  embedding file read + CPU->GPU
+p_prefill           26.0     25.6     27.7     30.9     2%  P  prefill forward (sched -> first token, minus load)
+p_to_d             138.1     84.7    304.1    840.0    10%  P done -> D request arrives (response + proxy hop)
+d_render           226.2    177.3    421.3    910.2    16%  D  render (video decode + HF processor, again)
+d_queue             69.9     26.6    148.6    715.8     5%  D  API -> engine core -> KV load starts
+d_kv               114.2     90.7    178.6    287.7     8%  D  NIXL KV transfer P->D
+d_first_token       70.9     65.1     94.4    114.2     5%  D  KV received -> first token
+d_decode_rest     4222.0   4085.0   4896.7   5093.7         D  first token -> last token
+------------------------------------------------------------
+ttft              1392.8   1057.7   2519.4   4267.4         E arrival -> D first token (server-side TTFT)
+e2e               5614.8   5623.4   6591.5   8025.1         E arrival -> D finished

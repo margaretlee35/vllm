@@ -228,6 +228,12 @@ TARGET_OUTPUT_LOG="$RUN_DIR/target_script.log"
 activate_venv
 cd "$GIT_ROOT"
 
+# Triton JIT-compiles helpers with $CC; the default nvidia (NVHPC) module sets
+# CC=nvc, which rejects gcc flags like -Wno-psabi. Fall back to gcc.
+if [[ "${CC:-}" == *nvc* ]]; then
+    export CC=gcc CXX=g++
+fi
+
 echo "epdtest launcher"
 echo "  topology       : $TOPOLOGY"
 echo "  benchmark      : $BENCHMARK"

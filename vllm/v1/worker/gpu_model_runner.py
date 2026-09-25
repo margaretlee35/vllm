@@ -111,6 +111,7 @@ from vllm.utils.torch_utils import (
     get_dtype_size,
     kv_cache_dtype_str_to_dtype,
 )
+from vllm.v1 import stage_trace
 from vllm.v1.attention.backend import (
     AttentionBackend,
     AttentionCGSupport,
@@ -2593,11 +2594,23 @@ class GPUModelRunner(
         encoder_outputs: list[torch.Tensor] = []
         # Track the current index in mm_kwargs/mm_lora_refs to map groups to request IDs
         current_item_idx = 0
-        for modality, num_items, mm_kwargs_batch in group_and_batch_mm_kwargs(
+        mm_batches = group_and_batch_mm_kwargs(
             mm_kwargs,
             device=self.device,
             pin_memory=self.pin_memory,
-        ):
+        )
+        trace_reqs = sorted({req_id for req_id, _ in mm_lora_refs})
+        if stage_trace.ENABLED:
+            # Collate + pin + host->device copy for every batch up front, so the
+            # transfer is timed apart from the encoder forward.
+            with stage_trace.span(
+                "enc_h2d", sync=True, reqs=trace_reqs, items=len(mm_kwargs)
+            ) as fields:
+                mm_batches = list(mm_batches)
+                fields["bytes"] = stage_trace.tensor_nbytes(
+                    [batch for _, _, batch in mm_batches]
+                )
+        for modality, num_items, mm_kwargs_batch in mm_batches:
             batch_outputs: MultiModalEmbeddings
 
             # EVS-related change.
@@ -2644,8 +2657,13 @@ class GPUModelRunner(
                 # each of shape (feature_size, hidden_size) in case the feature
                 # size is dynamic depending on the input multimodal items.
 
-                with self.timed_encoder_operation(
-                    should_time, mm_lora_refs, current_item_idx, num_items
+                with (
+                    self.timed_encoder_operation(
+                        should_time, mm_lora_refs, current_item_idx, num_items
+                    ),
+                    stage_trace.span(
+                        "enc_forward", sync=True, reqs=trace_reqs, items=num_items
+                    ),
                 ):
                     batch_outputs = model.embed_multimodal(**mm_kwargs_batch)
 

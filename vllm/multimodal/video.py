@@ -1,6 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import math
+import os
+import tempfile
+import threading
 from abc import abstractmethod
 from io import BytesIO
 from typing import Any, NamedTuple, cast
@@ -439,6 +442,92 @@ class OpenCVVideoBackend(VideoLoader, OpenCVVideoBackendMixin):
             valid_frame_indices=valid_frame_indices,
         )
 
+        return frames, metadata
+
+
+@VIDEO_LOADER_REGISTRY.register("nvdec")
+class NvdecVideoBackend(OpenCVVideoBackend):
+    """Decode on the GPU's NVDEC engine via PyNvVideoCodec.
+
+    Same frame sampling and output as the `opencv` backend -- an (T, H, W, 3)
+    uint8 RGB numpy array -- so it is a drop-in swap. Frames are decoded into
+    device memory and copied back to host, because the HF processor downstream
+    runs on CPU.
+
+    Decoders are cached per thread and reconfigured for each new video:
+    creating one costs hundreds of ms, reconfiguring a few. PyNvVideoCodec's
+    simple decoder only reads from a path, so the bytes go through a tmpfs
+    file first.
+
+    Decodes on GPU 0 of the process's CUDA_VISIBLE_DEVICES by default, i.e. the
+    GPU the model runs on. VLLM_NVDEC_DEVICE picks another visible GPU: NVDEC
+    frames still need CUDA kernels (NV12->RGB) and a device->host copy, and
+    those time-slice with the model's kernels when both share a GPU.
+    """
+
+    _local = threading.local()
+
+    @classmethod
+    def _get_decoder(cls, path: str):
+        dec = getattr(cls._local, "decoder", None)
+        if dec is None:
+            import PyNvVideoCodec as nvc
+
+            dec = nvc.SimpleDecoder(
+                path,
+                gpu_id=int(os.environ.get("VLLM_NVDEC_DEVICE", "0")),
+                use_device_memory=True,
+                output_color_type=nvc.OutputColorType.RGB,
+            )
+            cls._local.decoder = dec
+        else:
+            dec.reconfigure_decoder(path)
+        return dec
+
+    @classmethod
+    def load_bytes(
+        cls,
+        data: bytes,
+        num_frames: int = -1,
+        fps: int = -1,
+        max_duration: int = 300,
+        **kwargs,
+    ) -> tuple[npt.NDArray, dict[str, Any]]:
+        import torch
+
+        tmp_dir = "/dev/shm" if os.path.isdir("/dev/shm") else None
+        with tempfile.NamedTemporaryFile(suffix=".mp4", dir=tmp_dir) as f:
+            f.write(data)
+            f.flush()
+            dec = cls._get_decoder(f.name)
+
+            stream = dec.get_stream_metadata()
+            total_frames_num = len(dec)
+            original_fps = stream.average_fps
+            # frames / fps, as the opencv backend computes it, so both pick the
+            # same frame indices (the container's own duration can differ).
+            source = VideoSourceMetadata(
+                total_frames_num=total_frames_num,
+                original_fps=original_fps,
+                duration=total_frames_num / original_fps if original_fps > 0 else 0,
+            )
+            target = VideoTargetMetadata(
+                num_frames=num_frames, fps=fps, max_duration=max_duration
+            )
+            frame_idx = [
+                int(i)
+                for i in cls.compute_frames_index_to_sample(
+                    source=source, target=target
+                )
+            ]
+            decoded = dec.get_batch_frames_by_index(frame_idx)
+
+        frames = torch.stack([torch.from_dlpack(fr) for fr in decoded]).cpu().numpy()
+        metadata = cls.create_hf_metadata(
+            source=source,
+            video_backend="nvdec",
+            valid_frame_indices=frame_idx[: len(frames)],
+        )
         return frames, metadata
 
 

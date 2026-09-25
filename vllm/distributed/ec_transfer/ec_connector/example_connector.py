@@ -13,6 +13,7 @@ from vllm.distributed.ec_transfer.ec_connector.base import (
     ECConnectorRole,
 )
 from vllm.logger import init_logger
+from vllm.v1 import stage_trace
 from vllm.v1.core.sched.output import SchedulerOutput
 
 if TYPE_CHECKING:
@@ -89,9 +90,12 @@ class ECExampleConnector(ECConnectorBase):
             if mm_data.mm_hash in encoder_cache:
                 continue
             filename = self._generate_filename_debug(mm_data.mm_hash)
-            ec_cache = safetensors.torch.load_file(
-                filename, device=current_platform.device_type
-            )["ec_cache"]
+            # File read + host->device copy.
+            with stage_trace.span("ec_load", sync=True, mm=mm_data.mm_hash) as f:
+                ec_cache = safetensors.torch.load_file(
+                    filename, device=current_platform.device_type
+                )["ec_cache"]
+                f["bytes"] = ec_cache.nbytes
             encoder_cache[mm_data.mm_hash] = ec_cache
             logger.debug("Success load encoder cache for hash %s", mm_data.mm_hash)
 
@@ -113,8 +117,10 @@ class ECExampleConnector(ECConnectorBase):
             return
         filename = self._generate_filename_debug(mm_hash)
         ec_cache = encoder_cache[mm_hash]
-        tensors = {"ec_cache": ec_cache.detach().cpu()}
-        safetensors.torch.save_file(tensors, filename)
+        # Device->host copy + file write.
+        with stage_trace.span("ec_save", mm=mm_hash, bytes=ec_cache.nbytes):
+            tensors = {"ec_cache": ec_cache.detach().cpu()}
+            safetensors.torch.save_file(tensors, filename)
         logger.debug("Save cache successful for mm_hash %s", mm_hash)
 
     def has_cache_item(

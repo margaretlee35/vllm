@@ -81,6 +81,7 @@ from vllm.tool_parsers.utils import partial_json_loads
 from vllm.utils.collection_utils import as_list
 from vllm.utils.mistral import is_mistral_tokenizer
 from vllm.utils.mistral import mt as _mt
+from vllm.v1 import stage_trace
 
 logger = init_logger(__name__)
 
@@ -288,6 +289,9 @@ class OpenAIServingChat(OpenAIServing):
         for the API specification. This API mimics the OpenAI
         Chat Completion API.
         """
+        if stage_trace.ENABLED:
+            stage_trace.current_request.set(self._base_request_id(raw_request))
+            stage_trace.emit("api_arrival")
         # Streaming response
         tokenizer = self.renderer.tokenizer
         assert tokenizer is not None
@@ -302,7 +306,8 @@ class OpenAIServingChat(OpenAIServing):
                 tokenizer,
                 chat_template_kwargs=chat_template_kwargs,  # type: ignore[call-arg]
             )
-        result = await self.render_chat_request(request)
+        with stage_trace.span("api_render"):
+            result = await self.render_chat_request(request)
         if isinstance(result, ErrorResponse):
             return result
 
@@ -384,6 +389,7 @@ class OpenAIServingChat(OpenAIServing):
                     else None
                 )
 
+                stage_trace.emit("api_submit")
                 generator = self.engine_client.generate(
                     engine_prompt,
                     sampling_params,

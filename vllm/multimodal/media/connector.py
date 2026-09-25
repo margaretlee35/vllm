@@ -17,6 +17,7 @@ from urllib3.util import Url, parse_url
 import vllm.envs as envs
 from vllm.connections import HTTPConnection, global_http_connection
 from vllm.utils.registry import ExtensionManager
+from vllm.v1 import stage_trace
 
 from .audio import AudioEmbeddingMediaIO, AudioMediaIO
 from .base import MediaIO
@@ -222,7 +223,9 @@ class MediaConnector:
             future = loop.run_in_executor(
                 global_thread_pool, self._load_data_url, url_spec, media_io
             )
-            return await future
+            # Includes the wait for a free media-loading thread.
+            with stage_trace.span("media_load", media=type(media_io).__name__):
+                return await future
 
         if url_spec.scheme == "file":
             future = loop.run_in_executor(

@@ -1,0 +1,67 @@
+{
+  "completed": 64,
+  "mean_prompt_tokens": 6576.0,
+  "total_secs": 22.036984620965086,
+  "videos_per_request": 1,
+  "num_video_decodes": 64,
+  "mean_preprocess_per_request_ms": 336.29462118005904,
+  "mm_processor_stats": {
+    "video_decode_ms": {
+      "mean": 35.956549139882554,
+      "median": 36.842969013378024,
+      "std": 3.0512227971429287,
+      "p50.0": 36.842969013378024,
+      "p99.0": 40.904078318271786
+    },
+    "apply_hf_processor_ms": {
+      "mean": 253.1577712870785,
+      "median": 252.76469148229808,
+      "std": 1.400110675983935,
+      "p50.0": 252.76469148229808,
+      "p99.0": 256.5305427403655
+    },
+    "get_mm_hashes_ms": {
+      "mean": 46.603904562289244,
+      "median": 46.49577901000157,
+      "std": 0.27495417746321815,
+      "p50.0": 46.49577901000157,
+      "p99.0": 47.49083373462781
+    },
+    "apply_prompt_updates_ms": {
+      "mean": 0.5763961908087367,
+      "median": 0.5744000081904233,
+      "std": 0.030619958879759906,
+      "p50.0": 0.5744000081904233,
+      "p99.0": 0.666648639598861
+    },
+    "preprocessor_total_ms": {
+      "mean": 300.3380720401765,
+      "median": 299.8513024649583,
+      "std": 1.5359971306407671,
+      "p50.0": 299.8513024649583,
+      "p99.0": 304.27450567134656
+    },
+    "encoder_forward_ms": {
+      "mean": 80.00228672365968,
+      "median": 80.00091096619144,
+      "std": 0.022229060471762513,
+      "p50.0": 80.00091096619144,
+      "p99.0": 80.05167481140234
+    },
+    "num_encoder_calls": {
+      "mean": 1.0,
+      "median": 1.0,
+      "std": 0.0,
+      "p50.0": 1.0,
+      "p99.0": 1.0
+    }
+  },
+  "config": {
+    "model": "Qwen/Qwen2.5-VL-3B-Instruct",
+    "input_jsonl": "vlmtest/logs/20260924_video_sweep/opencv_640x480_16s/video_requests.jsonl",
+    "num_prompts": 64,
+    "mm_processor_cache_gb": 0.0,
+    "video_backend": "opencv"
+  },
+  "timestamp": "2026-09-24T17:46:26.242256"
+}
